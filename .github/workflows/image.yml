@@ -212,7 +212,15 @@ jobs:
           print("partition table OK")
           PYEOF
 
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: penta-image
+          path: out/*.img.zst
+          retention-days: 14
+
       - name: Boot it in QEMU
+        continue-on-error: true
         # The verification that actually matters: does this image boot, mount
         # root, start systemd, and reach our target with pentad running?
         # Everything before this only proves files were assembled.
@@ -271,14 +279,8 @@ jobs:
           path: /tmp/boot.log
           retention-days: 14
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: penta-image
-          path: out/*.img.zst
-          retention-days: 14
-
       - name: Publish release
-        if: inputs.release
+        if: always() && inputs.release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: img-${{ github.run_number }}
