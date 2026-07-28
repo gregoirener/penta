@@ -76,21 +76,37 @@ Other tools:
 
 ## Status
 
-Written and running on the Mac:
+**The image builds.** CI produces a ~512 MB `penta-<sha>.img.zst` (≈25 GB raw)
+containing Arch, the Nvidia stack, gamescope, Steam, RetroArch, `pentad` and the
+menu. Verified in CI: GPT parses, the ESP carries a bootable EFI binary, and the
+image boots under QEMU far enough for systemd to take over.
 
-- **Menu (M1.4)** — card carousel with fixed-anchor scrolling, focus animation,
+Working, exercised on macOS against `pentad --mock`:
+
+- **Menu** — card carousel with fixed-anchor scrolling, focus animation,
   generated card art, ambient background that cross-fades to the focused title,
-  gamepad + keyboard input with an accelerating repeat ramp.
-- **Daemon (M1.3)** — 12 commands, Steam/native/ROM title providers, gamescope
-  session launching with PRIME offload, DualSense lightbar over raw HID, global
-  PS-button watcher, power/storage services. `--mock` runs it all on macOS.
-- **Image (M1.1)** — mkosi config, repart layout, systemd units, greetd
-  autologin session, Plymouth theme, CI workflow.
+  Control Center strip, power menu with two-step confirmation, gamepad and
+  keyboard input with an accelerating repeat ramp.
+- **Daemon** — 13 commands, Steam/native/ROM title providers, gamescope session
+  launching with PRIME offload, DualSense lightbar over raw HID, a global
+  PS-button watcher that fires while a game holds focus, power, storage and
+  first-boot self-check.
+- **Image** — mkosi config, repart layout that grows the data partition on first
+  boot, greetd autologin into the session, Plymouth theme, `cage` fallback if
+  gamescope won't start.
 
-**None of it has touched the Nitro 5 yet, and the image has never been built.**
-Next step is [M0](docs/M0-RUNBOOK.md) — boot a stock live ISO from the SanDisk
-and confirm the hardware cooperates. The image build also needs its first CI run
-to shake out; mkosi options move between versions.
+**Nothing has run on the Nitro 5 yet.** That is the only untested part left, and
+the hardware-specific risks (Nvidia Optimus, DualSense over Bluetooth) can't be
+settled anywhere else. Install path: [INSTALL-NO-USB.md](docs/INSTALL-NO-USB.md).
+
+### Bugs CI caught that would have bricked the install
+
+- **No `EFI/BOOT/BOOTX64.EFI`.** systemd-boot installs where firmware only looks
+  if an NVRAM boot entry exists — which a freshly written disk never has. The
+  image would have written perfectly and then refused to boot.
+- **1 GiB ESP against a ~600 MB kernel image**, leaving no room for the fallback.
+- A udev rule referencing a systemd unit that doesn't exist, and greetd racing a
+  second unit for ownership of the session.
 
 ## Layout
 
