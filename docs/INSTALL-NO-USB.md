@@ -10,12 +10,22 @@ under it — including the file the live system booted from.
 
 ```
 Windows (running)
-   └─ put a live ISO on C:\  and a GRUB entry on the ESP
+   └─ put the live ISO AND the PENTA image on C:\, add a GRUB entry
         └─ reboot → GRUB → loop-mount the ISO → copytoram=y
-             └─ live Linux, running from RAM, disk untouched and unneeded
-                  └─ curl the PENTA image → dd → /dev/nvme0n1   (Windows dies here)
-                       └─ reboot → PENTA
+             └─ live Linux, running from RAM
+                  └─ copy the PENTA image off C:\ into RAM too
+                       └─ dd from RAM → /dev/nvme0n1   (Windows dies here)
+                            └─ reboot → PENTA
 ```
+
+**No network is needed on the target machine at all.** Everything is downloaded
+in Windows, where Wi-Fi and a browser already work. Both files ride along on the
+disk, and both end up in RAM before anything is overwritten.
+
+> **Why no Windows app can do this for you:** Rufus, Etcher and Ventoy all write
+> to a *different* device than the one Windows booted from — Windows holds an
+> exclusive lock on its own system disk. Nothing running inside Windows can
+> overwrite the disk Windows is running on. Hence the RAM boot.
 
 ---
 
@@ -38,20 +48,26 @@ need the laptop working.
 
 ---
 
-## Step 1 — Download two files (in Windows)
+## Step 1 — Download three things (in Windows)
 
-1. **A live ISO.** Arch (`archlinux-x86_64.iso`, ~1.3 GB) from
+1. **The PENTA image.** From the repo's Actions run, download the
+   `penta-image` artifact (a zip, ~494 MB), extract it, and put the
+   `penta-*.img.zst` inside at **`C:\penta.img.zst`**.
+   A browser signed into GitHub can fetch it from the private repo directly —
+   no token juggling, and this is the only download that has to happen at all.
+2. **A live ISO.** Arch (`archlinux-x86_64.iso`, ~1.3 GB) from
    https://archlinux.org/download/ — chosen because archiso supports
-   `copytoram`, which is the whole basis of this method, and it ships `curl`
-   and `zstd`.
-2. **GRUB for Windows** — [GRUB2Win](https://sourceforge.net/projects/grub2win/).
+   `copytoram`, which is the whole basis of this method. Put it at
+   **`C:\archlinux.iso`** — exactly there, no subfolder, no spaces.
+3. **GRUB for Windows** — [GRUB2Win](https://sourceforge.net/projects/grub2win/).
    It installs GRUB to the EFI partition and adds a firmware boot entry without
    touching the Windows bootloader.
 
-Put the ISO at `C:\archlinux.iso` — exactly there, no subfolder, no spaces.
-
-> **RAM check:** `copytoram` needs enough free RAM to hold the whole ISO plus
-> the running system — roughly 4 GB free. Any Nitro 5 with 8 GB+ is fine.
+> **RAM check.** Everything has to fit in memory at once: the ISO (~1.3 GB), the
+> live system (~1 GB) and the PENTA image (~0.5 GB) — call it 3.5 GB, so you
+> want 6 GB+ free. Fine on any 8 GB Nitro 5, comfortable on 16 GB.
+> If the machine has only 8 GB, close Windows apps before rebooting; the check
+> in step 5 will catch a shortfall before anything is destroyed.
 
 ---
 
@@ -99,74 +115,86 @@ came up, you got it right.
 
 ---
 
-## Step 4 — Boot it and get online
+## Step 4 — Boot it
 
 Reboot → **F12** → GRUB → "Arch ISO (RAM)". Let it finish copying; it sits for
 a minute or two on a mostly blank screen while the ISO loads into memory.
 
-You land at a root prompt. Get networking up — **Ethernet is far easier**, plug
-the laptop into the router and it should already work:
-
-```bash
-ping -c2 archlinux.org
-```
-
-Wi-Fi, if you must:
-
-```bash
-iwctl station wlan0 connect "YOUR_SSID"
-```
+You land at a root prompt. **No networking needed** — both files are already on
+the disk.
 
 Confirm the live system is genuinely in RAM before going any further:
 
 ```bash
-findmnt / | grep -q "tmpfs\|ram" && echo "RAM: safe to wipe" || echo "STOP — not in RAM"
+findmnt -n -o SOURCE / ; free -h
 ```
 
-**If that says STOP, do not continue.** Go back and check `copytoram=y`.
+The root source should be a `tmpfs`/`ram` device, not a partition.
+
+**If root is still on a partition, stop.** Go back and check `copytoram=y` —
+without it, wiping the disk kills the running system mid-write.
 
 ---
 
-## Step 5 — Write PENTA over the whole drive
+## Step 5 — Pull the image into RAM
 
-This is the irreversible one.
+**This is the step that makes the whole thing safe.** The image currently lives
+on the disk we are about to destroy, so it has to move into memory first.
 
-Identify the target — it's the NVMe, almost certainly `/dev/nvme0n1`:
+Find and mount the Windows partition read-only:
+
+```bash
+lsblk -f
+mkdir -p /mnt/win
+mount -o ro /dev/nvme0n1p3 /mnt/win      # adjust pN to your C: partition
+ls -lh /mnt/win/penta.img.zst
+```
+
+Copy it into RAM and unmount:
+
+```bash
+cp /mnt/win/penta.img.zst /tmp/
+umount /mnt/win
+ls -lh /tmp/penta.img.zst
+```
+
+Now verify **nothing** is still reading from the disk:
+
+```bash
+findmnt | grep nvme || echo "nothing mounted from the NVMe — safe to wipe"
+```
+
+**If that lists any mount on the NVMe, stop and unmount it.** Writing over a
+mounted filesystem corrupts the write and can hang the machine mid-flash.
+
+---
+
+## Step 6 — Write PENTA over the whole drive
+
+This is the irreversible one. Windows dies at the first byte.
+
+Confirm the target really is the internal drive:
 
 ```bash
 lsblk -d -o NAME,SIZE,MODEL
 ```
 
-Then stream the image onto it. Nothing is stored first; the live system is in
-RAM and has no disk to store it on anyway.
-
-**Serve it from the Mac, not from GitHub.** The repo is private, so release and
-artifact URLs both need a token — awkward to supply from a live system with no
-browser. And the internet leg takes ~20 minutes; the LAN leg takes two. On the
-Mac:
+Then write it, straight from RAM:
 
 ```bash
-./tools/serve-image.sh ~/Downloads/penta-image.zip
+zstd -dc /tmp/penta.img.zst | dd of=/dev/nvme0n1 bs=8M status=progress oflag=direct
+sync
 ```
 
-That unpacks the artifact, prints your Mac's LAN IP, and serves the image
-read-only. Then on the target:
+Roughly 25 GB decompressed to NVMe — a couple of minutes. Then:
 
 ```bash
-curl -fL http://<MAC-IP>:8000/penta-<sha>.img.zst | zstd -dc | dd of=/dev/nvme0n1 bs=8M status=progress oflag=direct
+reboot
 ```
-
-When it finishes:
-
-```bash
-sync && reboot
-```
-
-Windows is gone as of the first byte written.
 
 ---
 
-## Step 6 — First boot
+## Step 7 — First boot
 
 Remove nothing, just let it boot. On the first start `systemd-repart` grows the
 data partition to fill the drive and creates swap, which adds ~30 seconds. Then
@@ -178,17 +206,17 @@ reach a console.
 
 ---
 
-## If it goes wrong before step 5
+## If it goes wrong before step 6
 
-Nothing has been destroyed. Remove the GRUB2Win entry from Windows, or in BIOS
-set Windows Boot Manager as first in the boot order. You're back where you
-started.
+Nothing has been destroyed. Reboot, pick Windows Boot Manager, and remove the
+GRUB2Win entry. You're back where you started — the only changes were two files
+on C:\ and a boot entry.
 
-## If it goes wrong after step 5
+## If it goes wrong after step 6
 
 The drive has PENTA on it, whether or not PENTA boots. You need external media
 to recover — which is the argument for buying a USB stick tomorrow *before*
-doing step 5, not after. A €8 16 GB stick turns every failure in this document
+doing step 6, not after. A €8 16 GB stick turns every failure in this document
 from "bricked until I buy a stick" into "reflash and try again".
 
 ---
