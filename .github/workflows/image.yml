@@ -115,6 +115,36 @@ jobs:
                 erofs-utils git python gnupg
               mkosi --version
               mkosi --output-dir /work/out --debug build
+
+              # --- Make the ESP bootable from a bare disk ------------------
+              # systemd-boot installs to EFI/systemd/ and normally relies on an
+              # NVRAM boot entry. A dd-ed image has no such entry: firmware
+              # only tries the removable-media fallback, EFI/BOOT/BOOTX64.EFI.
+              # Without this the Nitro 5 drops to a UEFI shell exactly like
+              # QEMU did.
+              loop=$(losetup -fP --show /work/out/penta.raw)
+              mkdir -p /mnt/esp
+              mount "${loop}p1" /mnt/esp
+              echo "--- ESP contents as built ---"
+              find /mnt/esp -maxdepth 3 | sed "s|/mnt/esp|ESP|"
+
+              if [ ! -f /mnt/esp/EFI/BOOT/BOOTX64.EFI ]; then
+                echo "--- installing removable-media fallback ---"
+                mkdir -p /mnt/esp/EFI/BOOT
+                src=$(find /mnt/esp/EFI -iname "systemd-bootx64.efi" | head -1)
+                if [ -z "$src" ]; then
+                  src=$(find /mnt/esp/EFI/Linux -iname "*.efi" | head -1)
+                fi
+                test -n "$src" || { echo "nothing bootable on the ESP"; exit 1; }
+                cp "$src" /mnt/esp/EFI/BOOT/BOOTX64.EFI
+              fi
+
+              echo "--- final ESP ---"
+              find /mnt/esp -maxdepth 3 | sed "s|/mnt/esp|ESP|"
+              test -f /mnt/esp/EFI/BOOT/BOOTX64.EFI
+              sync
+              umount /mnt/esp
+              losetup -d "$loop"
             '
           sudo chown -R "$(id -u):$(id -g)" out
           ls -lh out/
@@ -125,13 +155,10 @@ jobs:
         run: |
           set -euo pipefail
           target="out/penta-${GITHUB_SHA::7}.img.zst"
-          if [ -f out/penta.raw.zst ]; then
-            mv out/penta.raw.zst "$target"
-          elif [ -f out/penta.raw ]; then
-            zstd -19 -T0 out/penta.raw -o "$target"
-          else
-            echo "no image produced:"; ls -R out; exit 1
-          fi
+          test -f out/penta.raw || { echo "no image produced:"; ls -R out; exit 1; }
+          cp --sparse=always out/penta.raw /tmp/penta.raw
+          zstd -15 -T0 --long=27 out/penta.raw -o "$target"
+          rm -f out/penta.raw
           ls -lh "$target"
           echo "IMAGE=$target" >> "$GITHUB_ENV"
 
@@ -182,8 +209,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq qemu-system-x86 ovmf
 
-          # zstd writes sparse, so a 25 GiB image costs ~2 GiB on disk.
-          zstd -dc "$IMAGE" > /tmp/penta.raw
+          # /tmp/penta.raw was kept aside before compression.
+          ls -lhs /tmp/penta.raw
           df -h / | tail -1
 
           cp /usr/share/OVMF/OVMF_VARS_4M.fd /tmp/vars.fd
