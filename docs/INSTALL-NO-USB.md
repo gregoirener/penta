@@ -137,11 +137,23 @@ Identify the target — it's the NVMe, almost certainly `/dev/nvme0n1`:
 lsblk -d -o NAME,SIZE,MODEL
 ```
 
-Then stream the image straight from the release onto it. Nothing is stored
-first; the live system is in RAM and has no disk to store it on anyway:
+Then stream the image onto it. Nothing is stored first; the live system is in
+RAM and has no disk to store it on anyway.
+
+**Serve it from the Mac, not from GitHub.** The repo is private, so release and
+artifact URLs both need a token — awkward to supply from a live system with no
+browser. And the internet leg takes ~20 minutes; the LAN leg takes two. On the
+Mac:
 
 ```bash
-curl -fL "PASTE_THE_RELEASE_URL_HERE" | zstd -dc | dd of=/dev/nvme0n1 bs=8M status=progress oflag=direct
+./tools/serve-image.sh ~/Downloads/penta-image.zip
+```
+
+That unpacks the artifact, prints your Mac's LAN IP, and serves the image
+read-only. Then on the target:
+
+```bash
+curl -fL http://<MAC-IP>:8000/penta-<sha>.img.zst | zstd -dc | dd of=/dev/nvme0n1 bs=8M status=progress oflag=direct
 ```
 
 When it finishes:
