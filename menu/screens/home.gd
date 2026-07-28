@@ -19,6 +19,7 @@ var _row: Control
 var _cards: Array[GameCard] = []
 var _icons: Array[NavIcon] = []
 var _titles: Array = []
+var _running_uid := ""
 
 var _row_focus: Row = Row.CARDS
 var _card_index := 0
@@ -30,6 +31,8 @@ var _hint_label: Label
 var _clock_label: Label
 var _status_label: Label
 var _launch_veil: ColorRect
+var _control: ControlCenter
+var _power: PowerMenu
 
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -40,6 +43,7 @@ func _ready() -> void:
 	_build_row()
 	_build_status()
 	_build_veil()
+	_build_overlays()
 
 	Router.nav.connect(_on_nav)
 	Router.confirm.connect(_on_confirm)
@@ -61,14 +65,19 @@ func _ready() -> void:
 
 # --- Dev tooling --------------------------------------------------------------
 
-## `godot --path menu -- /tmp/shot.png` renders a few frames and writes a PNG.
-## Lets UI changes be checked without a console attached, and makes visual
-## regressions reviewable in a diff.
+## `godot --path menu -- /tmp/shot.png [control|power]` renders a few frames and
+## writes a PNG, optionally with an overlay open. Lets UI changes be checked
+## without a console or a controller attached.
 func _dev_capture_if_requested() -> void:
 	var args := OS.get_cmdline_user_args()
 	if args.is_empty():
 		return
-	await get_tree().create_timer(2.0).timeout
+	await get_tree().create_timer(1.6).timeout
+	if args.size() > 1:
+		match args[1]:
+			"control": _control.open(false)
+			"power":   _power.open()
+		await get_tree().create_timer(0.9).timeout
 	for i in 3:
 		await RenderingServer.frame_post_draw
 	get_viewport().get_texture().get_image().save_png(args[0])
@@ -129,6 +138,15 @@ func _build_status() -> void:
 	_status_label = Tokens.label("", Tokens.T_CAPTION, Tokens.TEXT_DIM)
 	_status_label.position = Vector2(ANCHOR_X, 1080 - 56)
 	add_child(_status_label)
+
+func _build_overlays() -> void:
+	# Added last so they sit above everything, including the launch veil.
+	_control = ControlCenter.new()
+	add_child(_control)
+	_control.power_requested.connect(_on_power_requested)
+
+	_power = PowerMenu.new()
+	add_child(_power)
 
 func _build_veil() -> void:
 	# Covers the screen while a title launches, so the handoff to gamescope is
@@ -259,8 +277,10 @@ func _on_confirm() -> void:
 	var fade := Tokens.tween(_launch_veil)
 	fade.tween_property(_launch_veil, "modulate:a", 1.0, Tokens.dur(Tokens.D_NORMAL))
 
+	_running_uid = str(t.get("uid", ""))
 	Ipc.request("title.launch", {"uid": t.get("uid", "")}, func(ok: bool, payload: Variant) -> void:
 		if not ok:
+			_running_uid = ""
 			_set_status("Launch failed: %s" % str(payload))
 			_restore_from_launch()
 	)
@@ -271,8 +291,17 @@ func _on_back() -> void:
 		_apply_focus(false)
 
 func _on_ps() -> void:
-	# M3 replaces this with the Control Center overlay.
-	_set_status("PS button — Control Center lands in M3")
+	if _power.visible:
+		_power.close()
+	elif _control.is_open():
+		_control.close()
+	else:
+		_control.open(_running_uid != "")
+
+func _on_power_requested() -> void:
+	# Hand off from Control Center to the power menu without a flash of home.
+	await _control.close()
+	_power.open()
 
 func _restore_from_launch() -> void:
 	Router.set_consumed(false)
@@ -282,9 +311,17 @@ func _restore_from_launch() -> void:
 func _on_daemon_event(event_name: String, args: Dictionary) -> void:
 	match event_name:
 		"title.exited":
+			_running_uid = ""
 			_set_status("")
 			_restore_from_launch()
 			Ipc.request("library.list", {}, _on_library)
+		"input.ps_button":
+			# The real PS button, seen by the daemon at the evdev layer — it
+			# arrives even while a game holds focus, which is the entire point.
+			if str(args.get("kind", "short")) == "long":
+				_power.open()
+			else:
+				_on_ps()
 		"controller.battery":
 			var pct := int(args.get("pct", 0))
 			if pct <= 20:
