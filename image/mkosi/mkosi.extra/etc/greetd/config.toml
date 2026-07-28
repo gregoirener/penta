@@ -1,0 +1,16 @@
+# Autologin straight into the console session. There is no login screen: a
+# console does not ask who you are before showing you your games.
+#
+# greetd rather than a getty hack because it creates a proper logind session,
+# which is what gives gamescope its seat and DRM master.
+
+[terminal]
+vt = 1
+
+[initial_session]
+command = "/usr/bin/penta-session"
+user = "penta"
+
+[default_session]
+command = "/usr/bin/penta-session"
+user = "penta"

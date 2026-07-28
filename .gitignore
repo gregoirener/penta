@@ -1,0 +1,16 @@
+# Godot
+menu/.godot/
+menu/android/
+
+# Build output
+build/
+out/
+*.img
+*.img.zst
+
+# Python
+__pycache__/
+*.pyc
+
+# Staged into the image by CI, never committed
+image/mkosi/mkosi.extra/opt/

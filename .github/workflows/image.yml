@@ -1,0 +1,135 @@
+name: build image
+
+# Builds the PENTA disk image on a free x86_64 runner, because the dev Mac is
+# arm64 and building an x86_64 Arch userspace under emulation takes hours.
+# The artifact is streamed to the SSD by tools/flash.sh and never stored on the
+# Mac — see docs/FLASHING.md.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'image/**'
+      - 'daemon/**'
+      - 'menu/**'
+      - '.github/workflows/image.yml'
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Publish as a release'
+        type: boolean
+        default: false
+
+env:
+  GODOT_VERSION: 4.7.1
+
+jobs:
+  menu:
+    name: build menu
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch Godot + export templates
+        run: |
+          set -euo pipefail
+          base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          curl -fLO "$base/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          curl -fLO "$base/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          unzip -q "Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          chmod +x "Godot_v${GODOT_VERSION}-stable_linux.x86_64"
+          sudo mv "Godot_v${GODOT_VERSION}-stable_linux.x86_64" /usr/local/bin/godot
+
+          # Export templates must sit at the exact version path Godot expects.
+          tdir="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          mkdir -p "$tdir"
+          unzip -q "Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          mv templates/* "$tdir/"
+
+      - name: Import project
+        # First run populates .godot/; without it the export finds no resources.
+        run: godot --headless --path menu --import || true
+
+      - name: Export
+        run: |
+          mkdir -p build
+          godot --headless --path menu \
+                --export-release "Linux x86_64" "$GITHUB_WORKSPACE/build/penta-menu"
+          chmod +x build/penta-menu
+          file build/penta-menu
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: penta-menu
+          path: build/penta-menu
+
+  image:
+    name: build disk image
+    needs: menu
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: penta-menu
+          path: staging
+
+      - name: Stage payload into the image tree
+        run: |
+          set -euo pipefail
+          root=image/mkosi/mkosi.extra
+          install -D -m 0755 staging/penta-menu "$root/opt/penta/penta-menu"
+          # The daemon ships as plain source: it is Python, and being able to
+          # read and patch it on the console at 2am is worth more than packaging.
+          mkdir -p "$root/opt/penta/daemon"
+          cp -r daemon/pentad "$root/opt/penta/daemon/"
+          install -D -m 0644 docs/DESIGN.md "$root/usr/share/penta/DESIGN.md"
+          find "$root/opt/penta" -maxdepth 2
+
+      - name: Install mkosi
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            systemd-boot systemd-container dosfstools btrfs-progs zstd
+          pipx install mkosi
+          mkosi --version
+
+      - name: Free up disk
+        # The runner ships with ~14 GB free; an Arch image plus its tools tree
+        # needs more than that.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h /
+
+      - name: Build
+        working-directory: image/mkosi
+        run: sudo --preserve-env=PATH mkosi --output-dir "$GITHUB_WORKSPACE/out" build
+
+      - name: Compress
+        run: |
+          set -euo pipefail
+          img=$(find out -name 'penta*.raw' | head -1)
+          test -n "$img" || { ls -R out; exit 1; }
+          zstd -19 -T0 "$img" -o "out/penta-${GITHUB_SHA::7}.img.zst"
+          ls -lh out/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: penta-image
+          path: out/*.img.zst
+          retention-days: 14
+
+      - name: Publish release
+        if: inputs.release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: img-${{ github.run_number }}
+          files: out/*.img.zst
+          body: |
+            PENTA image from `${{ github.sha }}`.
+
+            Flash with:
+            ```
+            ./tools/flash.sh diskN img-${{ github.run_number }}
+            ```

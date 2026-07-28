@@ -1,0 +1,2 @@
+#!/bin/sh
+lsmod | grep -q "^$1 "

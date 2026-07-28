@@ -1,0 +1,67 @@
+#!/bin/bash
+# First-boot hardware self-check.
+#
+# Replaces the manual M0 checklist: instead of an evening spent booting a live
+# ISO and running commands by hand, the console checks itself on first start and
+# reports through the menu. Same information, none of the evening.
+#
+# Writes machine-readable results so pentad can surface them, and never fails
+# the boot — a failed probe must still leave you at a usable menu.
+
+set -uo pipefail
+
+LOG=/var/log/penta-selftest.log
+RESULT=/var/lib/penta/selftest.json
+
+exec > >(tee -a "$LOG") 2>&1
+echo "=== penta selftest $(date -Is) ==="
+
+pass=0; fail=0
+declare -A results
+
+check() {
+        local name="$1"; shift
+        if "$@" >/dev/null 2>&1; then
+                echo "  PASS  $name"
+                results[$name]=true
+                pass=$((pass + 1))
+        else
+                echo "  FAIL  $name"
+                results[$name]=false
+                fail=$((fail + 1))
+        fi
+}
+
+# --- Graphics -----------------------------------------------------------------
+check nvidia_module   lsmod_has nvidia
+check nvidia_smi      nvidia-smi
+check vulkan          vulkaninfo --summary
+check drm_modeset     test -e /sys/module/nvidia_drm/parameters/modeset
+
+# --- Input --------------------------------------------------------------------
+check bluetooth       systemctl is-active bluetooth
+check input_devices   test -n "$(ls /dev/input/event* 2>/dev/null)"
+
+# --- Storage ------------------------------------------------------------------
+check data_partition  findmnt /games
+check swap_active     swapon --show=NAME --noheadings
+
+# --- Session ------------------------------------------------------------------
+check gamescope_bin   command -v gamescope
+check menu_binary     test -x /opt/penta/penta-menu
+
+echo "=== $pass passed, $fail failed ==="
+
+# Hand the results to the menu. `jq` isn't installed, so build it by hand.
+mkdir -p "$(dirname "$RESULT")"
+{
+        printf '{"ts":%d,"pass":%d,"fail":%d,"checks":{' "$(date +%s)" "$pass" "$fail"
+        sep=""
+        for k in "${!results[@]}"; do
+                printf '%s"%s":%s' "$sep" "$k" "${results[$k]}"
+                sep=","
+        done
+        printf '}}\n'
+} > "$RESULT"
+
+exit 0

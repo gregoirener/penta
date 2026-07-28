@@ -1,0 +1,7 @@
+# Let the pentad group read gamepads and talk to them over raw HID.
+# hid-playstation handles buttons/rumble/battery; hidraw is only needed for the
+# lightbar and adaptive triggers, which the kernel does not expose.
+
+KERNEL=="hidraw*", ATTRS{idVendor}=="054c", ATTRS{idProduct}=="0ce6", MODE="0660", GROUP="input", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{idVendor}=="054c", ATTRS{idProduct}=="09cc", MODE="0660", GROUP="input", TAG+="uaccess"
+SUBSYSTEM=="input", KERNEL=="event*", MODE="0660", GROUP="input"

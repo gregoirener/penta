@@ -1,0 +1,21 @@
+#!/bin/sh
+# The console session: gamescope owning the display, running the menu and
+# nothing else. No desktop, no window manager, no compositor to fall back to.
+set -eu
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export XDG_SESSION_TYPE=wayland
+
+# Hybrid graphics: the panel is wired to the iGPU, so the compositor runs
+# there and titles are offloaded to the Nvidia GPU per-process (see
+# daemon/pentad/session.py). Forcing the compositor onto Nvidia here would
+# cost a full copy every frame.
+export __GL_VRR_ALLOWED=1
+
+# Resolution comes from the panel; -r caps the menu, not the game.
+exec gamescope \
+        -f \
+        -e \
+        --adaptive-sync \
+        -r 60 \
+        -- /opt/penta/penta-menu

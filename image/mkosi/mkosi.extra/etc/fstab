@@ -1,0 +1,7 @@
+# The data partition does not exist until systemd-repart creates it on first
+# boot, so every entry is `nofail`: a missing games volume must never stop the
+# console from reaching its menu.
+LABEL=PENTA_DATA  /games                    btrfs  subvol=/games,compress=zstd:1,noatime,nofail    0 0
+LABEL=PENTA_DATA  /var/lib/penta/captures   btrfs  subvol=/captures,compress=zstd:1,noatime,nofail 0 0
+LABEL=PENTA_DATA  /var/lib/penta/art        btrfs  subvol=/art,noatime,nofail                      0 0
+LABEL=PENTA_SWAP  none                      swap   defaults,nofail                                 0 0

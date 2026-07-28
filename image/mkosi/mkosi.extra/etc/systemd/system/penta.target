@@ -1,0 +1,6 @@
+[Unit]
+Description=PENTA console
+Documentation=https://github.com/gregoirener/penta
+Requires=multi-user.target
+After=multi-user.target
+AllowIsolate=yes

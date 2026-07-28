@@ -1,0 +1,16 @@
+[Unit]
+Description=PENTA first-boot hardware self-check
+After=multi-user.target bluetooth.service
+Wants=bluetooth.service
+# Only ever runs once; the flag is what makes it a *first*-boot check.
+ConditionPathExists=!/var/lib/penta/selftest.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/penta-selftest
+RemainAfterExit=yes
+# A failed probe must never stop the console from reaching its menu.
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=penta.target

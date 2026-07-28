@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=PENTA
+Description=Console boot splash
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/penta
+ScriptFile=/usr/share/plymouth/themes/penta/penta.script
