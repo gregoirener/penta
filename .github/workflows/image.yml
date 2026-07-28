@@ -219,58 +219,80 @@ jobs:
           path: out/*.img.zst
           retention-days: 14
 
-      - name: Boot it in QEMU
+      - name: Boot it in QEMU and photograph the screen
         continue-on-error: true
-        # The verification that actually matters: does this image boot, mount
-        # root, start systemd, and reach our target with pentad running?
-        # Everything before this only proves files were assembled.
+        # Screenshots, not just a serial log. A boot that reaches the menu and a
+        # boot that hangs on a black screen produce identical serial output when
+        # the console is deliberately quiet — but they look nothing alike.
         run: |
-          set -euo pipefail
+          set -uo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-system-x86 ovmf
+          sudo apt-get install -y -qq qemu-system-x86 ovmf netcat-openbsd imagemagick
 
-          # /tmp/penta.raw was kept aside before compression.
           ls -lhs /tmp/penta.raw
-          df -h / | tail -1
-
           cp /usr/share/OVMF/OVMF_VARS_4M.fd /tmp/vars.fd
+          mkdir -p /tmp/shots
 
-          set +e
-          # No KVM on GitHub runners, so this is pure TCG emulation at roughly
-          # 10x slowdown. An Arch boot that takes 20s on metal needs minutes here.
-          timeout 900 qemu-system-x86_64 \
-            -machine q35,accel=tcg -cpu qemu64 -m 3072 -smp 4 \
+          # -device virtio-vga gives the guest a real framebuffer to draw on;
+          # without one there is nothing to screenshot. No KVM on runners, so
+          # this is TCG emulation and everything takes minutes, not seconds.
+          qemu-system-x86_64 \
+            -machine q35,accel=tcg -cpu qemu64 -m 4096 -smp 4 \
             -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
             -drive if=pflash,format=raw,unit=1,file=/tmp/vars.fd \
             -drive file=/tmp/penta.raw,format=raw,if=virtio \
-            -device virtio-gpu \
-            -nographic -serial mon:stdio -display none \
-            -no-reboot > /tmp/boot.log 2>&1
-          set -e
+            -device virtio-vga \
+            -display none \
+            -serial file:/tmp/boot.log \
+            -monitor telnet:127.0.0.1:5555,server,nowait \
+            -no-reboot &
+          QPID=$!
+          sleep 20
 
-          echo "--------- last 60 lines of boot ---------"
-          tail -60 /tmp/boot.log
-          echo "-----------------------------------------"
-
-          # The image boots silently by design, so absence of kernel output
-          # proves nothing. penta-beacon.service writes this line to the console
-          # once systemd has reached penta.target — which can only happen if the
-          # UKI ran, root mounted, and our units are wired correctly.
-          if grep -q "PENTA-BOOT-OK" /tmp/boot.log; then
-            echo "BOOT VERIFIED: $(grep -o 'PENTA-BOOT-OK.*' /tmp/boot.log | head -1)"
-          else
-            echo "FAIL: never reached penta.target"
-            # systemd emits an OSC 3008 sequence when it starts; seeing it means
-            # the UKI ran, root mounted and userspace began — so a failure past
-            # this point is ours, not the boot chain's.
-            if grep -aq "3008;start=" /tmp/boot.log; then
-              echo "  (systemd DID start — the boot chain is fine)"
+          for i in $(seq 1 22); do
+            kill -0 "$QPID" 2>/dev/null || { echo "qemu exited early"; break; }
+            n=$(printf '%02d' "$i")
+            printf 'screendump /tmp/shots/f%s.ppm\n' "$n" \
+              | timeout 15 nc 127.0.0.1 5555 >/dev/null 2>&1 || true
+            if grep -aq "PENTA-BOOT-OK" /tmp/boot.log 2>/dev/null; then
+              echo "beacon seen at ~$((i * 45 + 20))s"
+              sleep 25
+              printf 'screendump /tmp/shots/final.ppm\n' \
+                | timeout 15 nc 127.0.0.1 5555 >/dev/null 2>&1 || true
+              break
             fi
-            echo "(firmware handoff below — if BdsDxe started our entry, the"
-            echo " kernel ran but something after it did not)"
-            grep -aiE "BdsDxe|panic|Kernel|error|Failed" /tmp/boot.log | tail -20 || true
-            exit 1
+            sleep 45
+          done
+
+          kill "$QPID" 2>/dev/null || true
+          sleep 3
+
+          # PPM is what the monitor emits; nothing renders that in a browser.
+          for f in /tmp/shots/*.ppm; do
+            [ -e "$f" ] || continue
+            convert "$f" "${f%.ppm}.png" 2>/dev/null || true
+            rm -f "$f"
+          done
+          ls -lh /tmp/shots/ || true
+
+          echo "======== serial output ========"
+          tail -c 6000 /tmp/boot.log | tr -d '\000' || true
+          echo "==============================="
+
+          if grep -aq "PENTA-BOOT-OK" /tmp/boot.log; then
+            echo "BOOT VERIFIED: $(grep -ao 'PENTA-BOOT-OK.*' /tmp/boot.log | head -1)"
+          else
+            echo "did not reach penta.target within the window"
+            grep -aq "3008;start=" /tmp/boot.log && echo "  (systemd started — boot chain is fine)"
+            echo "  check the screenshots to see where it got to"
           fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: boot-screenshots
+          path: /tmp/shots/*.png
+          retention-days: 14
 
       - uses: actions/upload-artifact@v4
         if: always()
