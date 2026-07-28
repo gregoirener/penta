@@ -241,14 +241,19 @@ jobs:
           tail -60 /tmp/boot.log
           echo "-----------------------------------------"
 
-          grep -q "Linux version" /tmp/boot.log || { echo "FAIL: kernel never started"; exit 1; }
-          echo "kernel booted"
-          grep -qiE "systemd .* running in system mode" /tmp/boot.log \
-            || { echo "FAIL: systemd never took over (root not mounted?)"; exit 1; }
-          echo "systemd started"
-          grep -qiE "pentad|PENTA console" /tmp/boot.log \
-            || { echo "FAIL: never reached the PENTA target"; exit 1; }
-          echo "PENTA target reached"
+          # The image boots silently by design, so absence of kernel output
+          # proves nothing. penta-beacon.service writes this line to the console
+          # once systemd has reached penta.target — which can only happen if the
+          # UKI ran, root mounted, and our units are wired correctly.
+          if grep -q "PENTA-BOOT-OK" /tmp/boot.log; then
+            echo "BOOT VERIFIED: $(grep -o 'PENTA-BOOT-OK.*' /tmp/boot.log | head -1)"
+          else
+            echo "FAIL: never reached penta.target"
+            echo "(firmware handoff below — if BdsDxe started our entry, the"
+            echo " kernel ran but something after it did not)"
+            grep -aiE "BdsDxe|panic|Kernel|error|Failed" /tmp/boot.log | tail -20 || true
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         if: always()

@@ -1,0 +1,16 @@
+[Unit]
+Description=PENTA boot beacon
+After=pentad.service
+Wants=pentad.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The console boots silently on purpose (quiet loglevel=3), which means a
+# successful boot produces no output at all — indistinguishable from a hang.
+# This writes one line to the console once the stack is actually up, so CI (and
+# a serial cable on real hardware) can tell "silent and fine" from "dead".
+ExecStart=/bin/sh -c 'echo "PENTA-BOOT-OK target=penta kernel=$(uname -r)" > /dev/console'
+
+[Install]
+WantedBy=penta.target
