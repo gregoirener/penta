@@ -128,15 +128,26 @@ jobs:
               echo "--- ESP contents as built ---"
               find /mnt/esp -maxdepth 3 | sed "s|/mnt/esp|ESP|"
 
+              df -h /mnt/esp
+
               if [ ! -f /mnt/esp/EFI/BOOT/BOOTX64.EFI ]; then
                 echo "--- installing removable-media fallback ---"
                 mkdir -p /mnt/esp/EFI/BOOT
-                src=$(find /mnt/esp/EFI -iname "systemd-bootx64.efi" | head -1)
-                if [ -z "$src" ]; then
+                # Prefer systemd-boot if it is there; otherwise the UKI itself.
+                # A UKI is a PE binary with the kernel, initrd and cmdline baked
+                # in, so firmware can execute it directly — no bootloader, no
+                # menu, which is what a console wants anyway.
+                src=$(find /mnt/esp/EFI -iname "systemd-boot*.efi" | head -1)
+                if [ -n "$src" ]; then
+                  cp "$src" /mnt/esp/EFI/BOOT/BOOTX64.EFI
+                else
                   src=$(find /mnt/esp/EFI/Linux -iname "*.efi" | head -1)
+                  test -n "$src" || { echo "nothing bootable on the ESP"; exit 1; }
+                  echo "no systemd-boot; booting the UKI directly"
+                  ls -lh "$src"
+                  # Move, not copy: two copies of a ~600 MB UKI will not fit.
+                  mv "$src" /mnt/esp/EFI/BOOT/BOOTX64.EFI
                 fi
-                test -n "$src" || { echo "nothing bootable on the ESP"; exit 1; }
-                cp "$src" /mnt/esp/EFI/BOOT/BOOTX64.EFI
               fi
 
               echo "--- final ESP ---"
