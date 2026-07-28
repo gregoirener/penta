@@ -1,21 +1,46 @@
 #!/bin/sh
-# The console session: gamescope owning the display, running the menu and
-# nothing else. No desktop, no window manager, no compositor to fall back to.
+# The console session: a compositor owning the display, running the menu and
+# nothing else. No desktop, no window manager, no fallback to a shell.
 set -eu
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export XDG_SESSION_TYPE=wayland
-
-# Hybrid graphics: the panel is wired to the iGPU, so the compositor runs
-# there and titles are offloaded to the Nvidia GPU per-process (see
-# daemon/pentad/session.py). Forcing the compositor onto Nvidia here would
-# cost a full copy every frame.
 export __GL_VRR_ALLOWED=1
 
-# Resolution comes from the panel; -r caps the menu, not the game.
-exec gamescope \
-        -f \
-        -e \
-        --adaptive-sync \
-        -r 60 \
-        -- /opt/penta/penta-menu
+MENU=/opt/penta/penta-menu
+LOG=/var/log/penta-session.log
+
+# Hybrid graphics: the panel is wired to the iGPU, so the compositor runs there
+# and titles are offloaded to the Nvidia GPU per-process (daemon/pentad/
+# session.py). Forcing the compositor onto Nvidia costs a copy every frame.
+
+log() { echo "$(date -Is) $*" >> "$LOG"; }
+
+try_gamescope() {
+        log "starting gamescope"
+        exec gamescope -f -e --adaptive-sync -r 60 -- "$MENU"
+}
+
+try_cage() {
+        log "gamescope unavailable, falling back to cage"
+        exec cage -d -- "$MENU"
+}
+
+# gamescope on Nvidia is the least battle-tested part of this stack (the Steam
+# Deck is AMD). If it cannot start, a bare kiosk compositor still gets the user
+# to a working menu — losing upscaling and the frame limiter, not the console.
+# Without this, a gamescope failure is an unexplained black screen forever,
+# because greetd would just respawn it in a loop.
+if command -v gamescope >/dev/null 2>&1; then
+        if gamescope --help >/dev/null 2>&1; then
+                try_gamescope
+        fi
+        log "gamescope present but not runnable"
+fi
+
+if command -v cage >/dev/null 2>&1; then
+        try_cage
+fi
+
+log "no compositor available at all"
+exit 1
