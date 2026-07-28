@@ -108,8 +108,8 @@ jobs:
             archlinux:latest bash -euxo pipefail -c '
               pacman -Sy --noconfirm --needed \
                 mkosi systemd-ukify btrfs-progs dosfstools e2fsprogs \
-                zstd arch-install-scripts squashfs-tools erofs-utils \
-                git python
+                zstd xz cpio mtools arch-install-scripts squashfs-tools \
+                erofs-utils git python gnupg
               mkosi --version
               mkosi --output-dir /work/out --debug build
             '
