@@ -67,6 +67,7 @@ jobs:
     name: build disk image
     needs: menu
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -227,8 +228,10 @@ jobs:
           cp /usr/share/OVMF/OVMF_VARS_4M.fd /tmp/vars.fd
 
           set +e
-          timeout 300 qemu-system-x86_64 \
-            -machine q35 -cpu max -m 3072 -smp 2 \
+          # No KVM on GitHub runners, so this is pure TCG emulation at roughly
+          # 10x slowdown. An Arch boot that takes 20s on metal needs minutes here.
+          timeout 900 qemu-system-x86_64 \
+            -machine q35,accel=tcg -cpu qemu64 -m 3072 -smp 4 \
             -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
             -drive if=pflash,format=raw,unit=1,file=/tmp/vars.fd \
             -drive file=/tmp/penta.raw,format=raw,if=virtio \
@@ -249,6 +252,12 @@ jobs:
             echo "BOOT VERIFIED: $(grep -o 'PENTA-BOOT-OK.*' /tmp/boot.log | head -1)"
           else
             echo "FAIL: never reached penta.target"
+            # systemd emits an OSC 3008 sequence when it starts; seeing it means
+            # the UKI ran, root mounted and userspace began — so a failure past
+            # this point is ours, not the boot chain's.
+            if grep -aq "3008;start=" /tmp/boot.log; then
+              echo "  (systemd DID start — the boot chain is fine)"
+            fi
             echo "(firmware handoff below — if BdsDxe started our entry, the"
             echo " kernel ran but something after it did not)"
             grep -aiE "BdsDxe|panic|Kernel|error|Failed" /tmp/boot.log | tail -20 || true
