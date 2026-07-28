@@ -98,10 +98,13 @@ jobs:
         # mkosi runs inside an Arch container rather than on the Ubuntu host:
         # pacman is native there, so no tools tree has to be bootstrapped, and
         # the mkosi version tracks the same distro we are building.
-        # --privileged is required for loop devices and repart.
+        # --privileged is required for loop devices and repart; seccomp=unconfined
+        # because pacman post-install hooks (fc-cache-32) hit blocked syscalls
+        # under Docker's default profile and die with SIGSYS.
         run: |
           mkdir -p out
           docker run --rm --privileged \
+            --security-opt seccomp=unconfined \
             -v "$GITHUB_WORKSPACE:/work" \
             -v /dev:/dev \
             -w /work/image/mkosi \
