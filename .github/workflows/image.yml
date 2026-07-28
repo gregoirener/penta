@@ -87,24 +87,34 @@ jobs:
           install -D -m 0644 docs/DESIGN.md "$root/usr/share/penta/DESIGN.md"
           find "$root/opt/penta" -maxdepth 2
 
-      - name: Install mkosi
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            systemd-boot systemd-container dosfstools btrfs-progs zstd
-          pipx install mkosi
-          mkosi --version
-
       - name: Free up disk
-        # The runner ships with ~14 GB free; an Arch image plus its tools tree
-        # needs more than that.
+        # The runner ships with ~14 GB free; an Arch image needs more.
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /usr/local/.ghcup
           df -h /
 
       - name: Build
-        working-directory: image/mkosi
-        run: sudo --preserve-env=PATH mkosi --output-dir "$GITHUB_WORKSPACE/out" build
+        # mkosi runs inside an Arch container rather than on the Ubuntu host:
+        # pacman is native there, so no tools tree has to be bootstrapped, and
+        # the mkosi version tracks the same distro we are building.
+        # --privileged is required for loop devices and repart.
+        run: |
+          mkdir -p out
+          docker run --rm --privileged \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -v /dev:/dev \
+            -w /work/image/mkosi \
+            archlinux:latest bash -euxo pipefail -c '
+              pacman -Sy --noconfirm --needed \
+                mkosi systemd-ukify btrfs-progs dosfstools e2fsprogs \
+                zstd arch-install-scripts squashfs-tools erofs-utils \
+                git python
+              mkosi --version
+              mkosi --output-dir /work/out --debug build
+            '
+          sudo chown -R "$(id -u):$(id -g)" out
+          ls -lh out/
 
       - name: Compress
         run: |
