@@ -119,13 +119,37 @@ jobs:
           sudo chown -R "$(id -u):$(id -g)" out
           ls -lh out/
 
-      - name: Compress
+      - name: Name the artifact
+        # mkosi already compresses (CompressOutput=zstd in mkosi.conf), so the
+        # output is penta.raw.zst; only compress if we somehow got a raw image.
         run: |
           set -euo pipefail
-          img=$(find out -name 'penta*.raw' | head -1)
-          test -n "$img" || { ls -R out; exit 1; }
-          zstd -19 -T0 "$img" -o "out/penta-${GITHUB_SHA::7}.img.zst"
-          ls -lh out/
+          target="out/penta-${GITHUB_SHA::7}.img.zst"
+          if [ -f out/penta.raw.zst ]; then
+            mv out/penta.raw.zst "$target"
+          elif [ -f out/penta.raw ]; then
+            zstd -19 -T0 out/penta.raw -o "$target"
+          else
+            echo "no image produced:"; ls -R out; exit 1
+          fi
+          ls -lh "$target"
+          echo "IMAGE=$target" >> "$GITHUB_ENV"
+
+      - name: Sanity-check the image
+        # Catches the failure mode that matters most: an image that builds but
+        # has no bootloader, or is implausibly small because a step silently
+        # produced an empty filesystem.
+        run: |
+          set -euo pipefail
+          size=$(stat -c%s "$IMAGE")
+          echo "compressed size: $((size / 1024 / 1024)) MiB"
+          test "$size" -gt 400000000 || { echo "image suspiciously small"; exit 1; }
+          zstd -dc "$IMAGE" | head -c 100000000 > /tmp/head.img
+          file /tmp/head.img
+          sudo sfdisk -l /tmp/head.img 2>&1 | head -20
+          sudo sfdisk -l /tmp/head.img 2>&1 | grep -qi "EFI System" \
+            || { echo "no ESP found in partition table"; exit 1; }
+          echo "image looks bootable"
 
       - uses: actions/upload-artifact@v4
         with:
