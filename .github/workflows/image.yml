@@ -135,27 +135,89 @@ jobs:
           ls -lh "$target"
           echo "IMAGE=$target" >> "$GITHUB_ENV"
 
-      - name: Sanity-check the image
-        # Catches the failure mode that matters most: an image that builds but
-        # has no bootloader, or is implausibly small because a step silently
-        # produced an empty filesystem.
+      - name: Check the partition table
+        # sfdisk refuses GPT on a truncated file (no backup header), so parse
+        # the primary GPT directly out of the first few MiB.
         run: |
-          set -euo pipefail
-          size=$(stat -c%s "$IMAGE")
-          echo "compressed size: $((size / 1024 / 1024)) MiB"
-          test "$size" -gt 300000000 || { echo "image suspiciously small"; exit 1; }
-
-          # GPT lives in the first sectors, so 8 MiB is plenty. `head` closing
-          # the pipe early makes zstd exit 70 under pipefail, hence the subshell.
           set +o pipefail
           zstd -dc "$IMAGE" 2>/dev/null | dd of=/tmp/head.img bs=1M count=8 \
                iflag=fullblock status=none || true
           set -o pipefail
+          python3 - <<'PYEOF'
+          import struct, uuid, sys
 
-          sfdisk -l /tmp/head.img 2>&1 | tail -12
-          sfdisk -l /tmp/head.img 2>&1 | grep -qi "EFI System" \
-            || { echo "no ESP in partition table"; exit 1; }
-          echo "partition table OK"
+          ESP = uuid.UUID("c12a7328-f81f-11d2-ba4b-00a0c93ec93b")
+          data = open("/tmp/head.img", "rb").read()
+
+          assert data[512:520] == b"EFI PART", "no GPT header at LBA1"
+          first, count, size = struct.unpack_from("<QII", data, 512 + 72)
+          print(f"GPT: {count} entries of {size} bytes at LBA {first}")
+
+          found = []
+          for i in range(count):
+              off = first * 512 + i * size
+              raw = data[off:off + 56]
+              if len(raw) < 56:
+                  break
+              type_guid = uuid.UUID(bytes_le=raw[0:16])
+              if int(type_guid) == 0:
+                  continue
+              name = data[off + 56:off + 128].decode("utf-16-le").rstrip("\x00")
+              lba_start, lba_end = struct.unpack_from("<QQ", raw, 32)
+              mib = (lba_end - lba_start + 1) * 512 // 1024 // 1024
+              print(f"  {i+1}: {name or '(unnamed)'}  {mib} MiB  {type_guid}")
+              found.append(type_guid)
+
+          if ESP not in found:
+              sys.exit("FAIL: no EFI System Partition")
+          print("partition table OK")
+          PYEOF
+
+      - name: Boot it in QEMU
+        # The verification that actually matters: does this image boot, mount
+        # root, start systemd, and reach our target with pentad running?
+        # Everything before this only proves files were assembled.
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-x86 ovmf
+
+          # zstd writes sparse, so a 25 GiB image costs ~2 GiB on disk.
+          zstd -dc "$IMAGE" > /tmp/penta.raw
+          df -h / | tail -1
+
+          cp /usr/share/OVMF/OVMF_VARS_4M.fd /tmp/vars.fd
+
+          set +e
+          timeout 300 qemu-system-x86_64 \
+            -machine q35 -cpu max -m 3072 -smp 2 \
+            -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+            -drive if=pflash,format=raw,unit=1,file=/tmp/vars.fd \
+            -drive file=/tmp/penta.raw,format=raw,if=virtio \
+            -device virtio-gpu \
+            -nographic -serial mon:stdio -display none \
+            -no-reboot > /tmp/boot.log 2>&1
+          set -e
+
+          echo "--------- last 60 lines of boot ---------"
+          tail -60 /tmp/boot.log
+          echo "-----------------------------------------"
+
+          grep -q "Linux version" /tmp/boot.log || { echo "FAIL: kernel never started"; exit 1; }
+          echo "kernel booted"
+          grep -qiE "systemd .* running in system mode" /tmp/boot.log \
+            || { echo "FAIL: systemd never took over (root not mounted?)"; exit 1; }
+          echo "systemd started"
+          grep -qiE "pentad|PENTA console" /tmp/boot.log \
+            || { echo "FAIL: never reached the PENTA target"; exit 1; }
+          echo "PENTA target reached"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: boot-log
+          path: /tmp/boot.log
+          retention-days: 14
 
       - uses: actions/upload-artifact@v4
         with:
