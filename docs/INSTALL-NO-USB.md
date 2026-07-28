@@ -87,24 +87,29 @@ Secure Boot must stay off — the Nvidia modules are unsigned.
 
 ## Step 3 — Add the GRUB entry
 
-Install GRUB2Win, then add a custom menu entry with this body. Adjust
-`(hd0,gpt3)` if your Windows partition isn't the third — GRUB2Win's menu editor
-will show you the list, and you can also press `c` at the GRUB prompt and run
-`ls` to see every partition.
+**Why GRUB and not systemd-boot.** systemd-boot can only read files from the EFI
+System Partition, and a Windows ESP is typically 100 MB with ~30 MB free — the
+Arch initramfs alone is ~130 MB. GRUB's EFI binary is a few MB and can read
+NTFS, so the kernel and initrd stay on `C:\` where there is room. This is the
+whole reason GRUB2Win exists.
+
+Install GRUB2Win → **Manage Boot Menu** → add an entry of type **Custom code**,
+name it `Arch RAM`, and paste this as the body:
 
 ```
-menuentry "Arch ISO (RAM)" {
-    insmod ntfs
-    insmod loopback
-    insmod part_gpt
-    search --no-floppy --set=root --file /archlinux.iso
-    loopback loop /archlinux.iso
-    linux (loop)/arch/boot/x86_64/vmlinuz-linux \
-        img_dev=/dev/nvme0n1p3 img_loop=/archlinux.iso \
-        copytoram=y earlymodules=loop
-    initrd (loop)/arch/boot/x86_64/initramfs-linux.img
-}
+insmod ntfs
+insmod loopback
+insmod part_gpt
+search --no-floppy --set=root --file /archlinux.iso
+loopback loop /archlinux.iso
+linux (loop)/arch/boot/x86_64/vmlinuz-linux img_dev=/dev/nvme0n1p3 img_loop=/archlinux.iso copytoram=y earlymodules=loop
+initrd (loop)/arch/boot/x86_64/initramfs-linux.img
 ```
+
+`search --file /archlinux.iso` locates whichever partition actually holds the
+ISO, so only `img_dev=` carries a guess. If the live system cannot find the ISO,
+that number is what to change — `lsblk -f` at the GRUB rescue prompt or in any
+live shell will show you the right one.
 
 `copytoram=y` is the load-bearing part. Without it the live system keeps reading
 from `C:\archlinux.iso` and the install dies the moment we wipe the disk.
