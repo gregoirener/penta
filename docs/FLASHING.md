@@ -1,10 +1,15 @@
 # PENTA — Flashing from the Mac
 
+> **If you have no USB media**, you don't need this document — see
+> [INSTALL-NO-USB.md](INSTALL-NO-USB.md), which installs straight to the
+> laptop's NVMe from a RAM-booted live system. This page is for writing PENTA
+> to a USB SSD from the Mac.
+
 ## The constraint that shapes this
 
-Your Mac has **8.2 GB free**. A PENTA image is ~24 GB raw / ~6 GB compressed.
-It does not fit, and we don't need it to: the image is **streamed** from GitHub
-straight onto the SSD and never touches your internal disk.
+Your Mac has **8.2 GB free**. A PENTA image is ~25 GB raw / ~0.5 GB compressed.
+The raw form does not fit, and it doesn't need to: the image is **streamed**
+from GitHub and decompressed in a pipe, never touching your internal disk.
 
 ```
 curl (GitHub release) → zstd -d → dd → /dev/rdiskN

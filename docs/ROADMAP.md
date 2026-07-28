@@ -56,9 +56,10 @@ Ugly is fine. This is the skeleton.
       boot by `systemd-repart` (no firstboot script of our own).
 - [x] `.github/workflows/image.yml` — exports the menu with Godot, stages it,
       builds the image, publishes `penta-<sha>.img.zst`.
-- [ ] **Run it.** Never executed; mkosi options shift between versions and this
-      config has not been validated against a real build.
-- [ ] Boot the resulting image on the Nitro 5.
+- [x] **Run it.** Green in CI; produces `penta-<sha>.img.zst`.
+- [x] Verified in CI: GPT parsed, ESP present, and the image boots under QEMU
+      far enough to start systemd and reach the PENTA target.
+- [ ] Boot it on the actual Nitro 5.
 - [ ] `.github/workflows/image.yml` — build on push, push to GHCR, attach
       `penta-<sha>.img.zst` to a release.
 - [ ] `tools/flash.sh` — stream a release artifact to `/dev/rdiskN` on the Mac.
