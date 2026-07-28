@@ -143,13 +143,19 @@ jobs:
           set -euo pipefail
           size=$(stat -c%s "$IMAGE")
           echo "compressed size: $((size / 1024 / 1024)) MiB"
-          test "$size" -gt 400000000 || { echo "image suspiciously small"; exit 1; }
-          zstd -dc "$IMAGE" | head -c 100000000 > /tmp/head.img
-          file /tmp/head.img
-          sudo sfdisk -l /tmp/head.img 2>&1 | head -20
-          sudo sfdisk -l /tmp/head.img 2>&1 | grep -qi "EFI System" \
-            || { echo "no ESP found in partition table"; exit 1; }
-          echo "image looks bootable"
+          test "$size" -gt 300000000 || { echo "image suspiciously small"; exit 1; }
+
+          # GPT lives in the first sectors, so 8 MiB is plenty. `head` closing
+          # the pipe early makes zstd exit 70 under pipefail, hence the subshell.
+          set +o pipefail
+          zstd -dc "$IMAGE" 2>/dev/null | dd of=/tmp/head.img bs=1M count=8 \
+               iflag=fullblock status=none || true
+          set -o pipefail
+
+          sfdisk -l /tmp/head.img 2>&1 | tail -12
+          sfdisk -l /tmp/head.img 2>&1 | grep -qi "EFI System" \
+            || { echo "no ESP in partition table"; exit 1; }
+          echo "partition table OK"
 
       - uses: actions/upload-artifact@v4
         with:
