@@ -1,7 +1,9 @@
 [Unit]
 Description=PENTA boot beacon
-After=pentad.service
-Wants=pentad.service
+After=pentad.service greetd.service
+# Deliberately no Requires/Wants on those: if pentad is crash-looping or greetd
+# cannot start a compositor, that is exactly when knowing the boot got this far
+# matters most. After= orders us without tying our fate to theirs.
 
 [Service]
 Type=oneshot
@@ -10,7 +12,7 @@ RemainAfterExit=yes
 # successful boot produces no output at all — indistinguishable from a hang.
 # This writes one line to the console once the stack is actually up, so CI (and
 # a serial cable on real hardware) can tell "silent and fine" from "dead".
-ExecStart=/bin/sh -c 'echo "PENTA-BOOT-OK target=penta kernel=$(uname -r)" > /dev/console'
+ExecStart=/bin/sh -c 'echo "PENTA-BOOT-OK target=penta kernel=$(uname -r) pentad=$(systemctl is-active pentad.service) greetd=$(systemctl is-active greetd.service)" > /dev/console'
 
 [Install]
 WantedBy=penta.target

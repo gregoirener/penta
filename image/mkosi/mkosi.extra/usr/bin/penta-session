@@ -32,7 +32,7 @@ try_cage() {
 # Without this, a gamescope failure is an unexplained black screen forever,
 # because greetd would just respawn it in a loop.
 if command -v gamescope >/dev/null 2>&1; then
-        if gamescope --help >/dev/null 2>&1; then
+        if timeout 10 gamescope --help >/dev/null 2>&1; then
                 try_gamescope
         fi
         log "gamescope present but not runnable"

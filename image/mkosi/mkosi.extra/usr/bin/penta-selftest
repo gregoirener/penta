@@ -21,7 +21,10 @@ declare -A results
 
 check() {
         local name="$1"; shift
-        if "$@" >/dev/null 2>&1; then
+        # Every probe is time-boxed. A hardware query that wedges must not be
+        # able to hold up the boot — the whole point of this script is to
+        # diagnose a sick machine, so it has to survive one.
+        if timeout 10 "$@" >/dev/null 2>&1; then
                 echo "  PASS  $name"
                 results[$name]=true
                 pass=$((pass + 1))
@@ -44,10 +47,10 @@ check input_devices   test -n "$(ls /dev/input/event* 2>/dev/null)"
 
 # --- Storage ------------------------------------------------------------------
 check data_partition  findmnt /games
-check swap_active     swapon --show=NAME --noheadings
+check swap_active     sh -c 'test -s /proc/swaps && test $(wc -l < /proc/swaps) -gt 1'
 
 # --- Session ------------------------------------------------------------------
-check gamescope_bin   command -v gamescope
+check gamescope_bin   test -x /usr/bin/gamescope
 check menu_binary     test -x /opt/penta/penta-menu
 
 echo "=== $pass passed, $fail failed ==="

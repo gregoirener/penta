@@ -9,8 +9,13 @@ ConditionPathExists=!/var/lib/penta/selftest.json
 Type=oneshot
 ExecStart=/usr/bin/penta-selftest
 RemainAfterExit=yes
+# This is a oneshot inside penta.target's dependency set, so the target waits
+# for it. Belt and braces on top of the per-probe timeouts: even a total wedge
+# costs 90 seconds once, not a boot.
+TimeoutStartSec=90
 # A failed probe must never stop the console from reaching its menu.
 SuccessExitStatus=0 1
+ExecStopPost=/bin/sh -c 'test -f /var/lib/penta/selftest.json || echo "{\"ran\":true,\"incomplete\":true}" > /var/lib/penta/selftest.json' 
 
 [Install]
 WantedBy=penta.target
