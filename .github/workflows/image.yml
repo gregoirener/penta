@@ -179,6 +179,15 @@ jobs:
           ls -lh "$target"
           echo "IMAGE=$target" >> "$GITHUB_ENV"
 
+      - name: Also produce an Etcher-friendly .img.xz
+        # balenaEtcher and Rufus read xz, gz, bz2 and zip — but not zstd. The
+        # image is mostly zeros, so xz is both small and quick here.
+        run: |
+          set -euo pipefail
+          xz_target="out/penta-${GITHUB_SHA::7}.img.xz"
+          zstd -dc "$IMAGE" | xz -3 -T0 -c > "$xz_target"
+          ls -lh out/
+
       - name: Check the partition table
         # sfdisk refuses GPT on a truncated file (no backup header), so parse
         # the primary GPT directly out of the first few MiB.
@@ -221,7 +230,9 @@ jobs:
         if: always()
         with:
           name: penta-image
-          path: out/*.img.zst
+          path: |
+            out/*.img.zst
+            out/*.img.xz
           retention-days: 14
 
       - name: Boot it in QEMU and photograph the screen

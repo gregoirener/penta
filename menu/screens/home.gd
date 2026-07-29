@@ -37,6 +37,7 @@ var _library: LibraryScreen
 var _settings: SettingsScreen
 var _store: StoreScreen
 var _profile: ProfileScreen
+var _installer: InstallerScreen
 
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -85,6 +86,7 @@ func _dev_capture_if_requested() -> void:
 			"settings": _settings.open()
 			"store":    _store.open()
 			"profile":  _profile.open(_titles)
+			"install":  _installer.open()
 		await get_tree().create_timer(7.0).timeout
 	for i in 3:
 		await RenderingServer.frame_post_draw
@@ -162,12 +164,16 @@ func _build_overlays() -> void:
 
 	_settings = SettingsScreen.new()
 	add_child(_settings)
+	_settings.installer_requested.connect(_on_installer_requested)
 
 	_store = StoreScreen.new()
 	add_child(_store)
 
 	_profile = ProfileScreen.new()
 	add_child(_profile)
+
+	_installer = InstallerScreen.new()
+	add_child(_installer)
 
 func _build_veil() -> void:
 	# Covers the screen while a title launches, so the handoff to gamescope is
@@ -324,6 +330,10 @@ func _activate_icon() -> void:
 			_settings.open()
 		4:  # Profile
 			_profile.open(_titles)
+
+func _on_installer_requested() -> void:
+	await _settings.close()
+	_installer.open()
 
 func _on_library_launch(uid: String) -> void:
 	await _library.close()

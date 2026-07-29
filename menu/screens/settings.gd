@@ -7,6 +7,7 @@ class_name SettingsScreen
 ## toggle. Rows that can act, act; rows that only report, say so.
 
 signal closed()
+signal installer_requested()
 
 const MARGIN := Vector2(160, 150)
 const ROW_H := 74.0
@@ -101,6 +102,9 @@ func _build_rows() -> void:
 		{"label": "Confirm button",   "value": "Cross", "kind": Kind.ACTION,
 		 "action": "toggle.confirm",
 		 "detail": "Swap Cross and Circle."},
+		{"label": "Install to disk",  "value": "", "kind": Kind.ACTION,
+		 "action": "open.installer",
+		 "detail": "Copy this console onto an internal drive. Erases the target disk completely."},
 		{"label": "System",           "value": "PENTA", "kind": Kind.INFO,
 		 "detail": "Original console environment. Arch, gamescope, Godot."},
 	]
@@ -209,6 +213,8 @@ func _activate() -> void:
 		"toggle.confirm":
 			Router.confirm_is_south = not Router.confirm_is_south
 			_set_value(_index, "Cross" if Router.confirm_is_south else "Circle")
+		"open.installer":
+			installer_requested.emit()
 		"open.steam":
 			_detail.text = "Opening Steam…"
 			Ipc.request("title.launch", {"uid": "system:steam"},

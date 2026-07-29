@@ -15,6 +15,7 @@ import logging
 import sys
 
 from .dualsense import ControllerService
+from .installer import Installer, list_targets
 from .inputs import InputWatcher
 from .power import PowerManager
 from .server import Server
@@ -53,6 +54,7 @@ async def run(mock: bool) -> None:
     controllers = ControllerService(emit, mock=mock)
     storage = StorageService(mock=mock)
     inputs = InputWatcher(emit, mock=mock)
+    installer = Installer(emit, mock=mock)
 
     library.refresh()
     controllers.refresh()
@@ -157,6 +159,31 @@ async def run(mock: bool) -> None:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL)
         return {"ok": True, "url": url}
+
+    @server.command("install.targets")
+    async def _install_targets(_args):
+        """Disks we could install onto, each with a verdict."""
+        if mock:
+            return {"targets": [
+                {"device": "/dev/nvme0n1", "size_gb": 476.9, "model": "SAMSUNG MZVLB512",
+                 "removable": False, "is_boot": False, "eligible": True, "reason": ""},
+                {"device": "/dev/sda", "size_gb": 14.6, "model": "Flash Disk",
+                 "removable": True, "is_boot": True, "eligible": False,
+                 "reason": "this is the device PENTA is running from"},
+            ], "boot_device": "/dev/sda"}
+        targets = await list_targets()
+        return {"targets": [t.to_json() for t in targets],
+                "boot_device": next((t.device for t in targets if t.is_boot), None)}
+
+    @server.command("install.confirm_token")
+    async def _install_token(args):
+        return {"token": installer.confirmation_token(str(args.get("device", "")))}
+
+    @server.command("install.start")
+    async def _install_start(args):
+        """Wipe a disk and clone the running console onto it. No undo."""
+        return await installer.install(
+            str(args.get("device", "")), str(args.get("confirm", "")))
 
     @server.command("steam.status")
     async def _steam_status(_args):
