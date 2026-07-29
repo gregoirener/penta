@@ -64,14 +64,20 @@ async def run(mock: bool) -> None:
         return {"pong": True, "mock": mock, "commands": server.commands}
 
     @server.command("library.list")
-    async def _library_list(_args):
-        return {"titles": [t.to_json() for t in library.sorted()]}
+    async def _library_list(args):
+        # Hidden entries (Steam, RetroArch) are launchable but never on the
+        # dashboard — a console shows games, not the client that runs them.
+        include = bool(args.get("include_hidden", False))
+        titles = [t for t in library.sorted() if include or not t.hidden]
+        return {"titles": [t.to_json() for t in titles]}
 
     @server.command("library.refresh")
-    async def _library_refresh(_args):
+    async def _library_refresh(args):
         titles = library.refresh()
-        emit("library.changed", count=len(titles))
-        return {"titles": [t.to_json() for t in titles]}
+        include = bool(args.get("include_hidden", False))
+        shown = [t for t in titles if include or not t.hidden]
+        emit("library.changed", count=len(shown))
+        return {"titles": [t.to_json() for t in shown]}
 
     @server.command("title.launch")
     async def _title_launch(args):

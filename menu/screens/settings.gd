@@ -87,8 +87,9 @@ func _build_rows() -> void:
 		{"label": "Controllers",      "value": "…", "kind": Kind.ACTION,
 		 "action": "controller.rescan",
 		 "detail": "Scan for controllers. Pair a DualSense by holding Create + PS."},
-		{"label": "Steam",            "value": "…", "kind": Kind.INFO,
-		 "detail": "Where Steam is installed and how many games it has."},
+		{"label": "Steam",            "value": "…", "kind": Kind.ACTION,
+		 "action": "open.steam",
+		 "detail": "Open Steam to sign in or install games. Games launch straight from the dashboard — Steam never appears."},
 		{"label": "Hardware check",   "value": "…", "kind": Kind.INFO,
 		 "detail": "Results of the probe that ran on first boot."},
 		{"label": "Refresh library",  "value": "", "kind": Kind.ACTION,
@@ -208,6 +209,12 @@ func _activate() -> void:
 		"toggle.confirm":
 			Router.confirm_is_south = not Router.confirm_is_south
 			_set_value(_index, "Cross" if Router.confirm_is_south else "Circle")
+		"open.steam":
+			_detail.text = "Opening Steam…"
+			Ipc.request("title.launch", {"uid": "system:steam"},
+				func(ok: bool, p: Variant) -> void:
+					_detail.text = "Steam opened — install a game, then Refresh library" \
+						if ok else "Steam is not installed")
 		"controller.rescan":
 			_detail.text = "Scanning…"
 			Ipc.request("controller.rescan", {}, func(ok: bool, p: Variant) -> void:

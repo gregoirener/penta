@@ -31,6 +31,9 @@ class Title:
     last_played: Optional[float] = None
     playtime_s: int = 0
     art: Dict[str, str] = field(default_factory=dict)
+    # Launchable but kept off the dashboard. A console shows games, not the
+    # store client that happens to run them.
+    hidden: bool = False
 
     def to_json(self) -> dict:
         return asdict(self)
@@ -126,6 +129,17 @@ def steam_library_dirs() -> List[Path]:
 STEAM_CDN = "https://cdn.cloudflare.steamstatic.com/steam/apps"
 
 
+def _steam_url_argv(url: str) -> List[str]:
+    """argv that hands a steam:// URL to Steam on this platform."""
+    import shutil
+    import sys
+    if shutil.which("steam"):
+        return ["steam", url]
+    if sys.platform == "darwin":
+        return ["open", url]           # macOS resolves the scheme itself
+    return ["xdg-open", url]
+
+
 def steam_art(appid: str) -> Dict[str, str]:
     return {
         # 600x900 portrait, centre-cropped into the square tile by the menu.
@@ -191,8 +205,10 @@ class SteamProvider(Provider):
             name=name,
             provider=self.name,
             # Hand off to Steam rather than exec'ing the binary: Steam owns
-            # Proton selection, per-game launch options and the cloud sync.
-            launch=["steam", f"steam://rungameid/{appid}"],
+            # Proton selection, per-game launch options and cloud saves. The
+            # rungameid URL goes straight into the game — Steam's own UI never
+            # appears, exactly like a desktop shortcut.
+            launch=_steam_url_argv(f"steam://rungameid/{appid}"),
             accent=accent_for(name),
             last_played=float(last) if last and last.isdigit() and int(last) else None,
             art=steam_art(appid),
@@ -286,11 +302,11 @@ class RomProvider(Provider):
 # --- Built-in system entries --------------------------------------------------
 
 class SystemProvider(Provider):
-    """Entries the console always offers, independent of any library.
+    """Launchable system apps, deliberately hidden from the dashboard.
 
-    Without this a fresh install shows an empty dashboard and no way to fix it:
-    the Steam provider reads Steam's manifests, but nothing would ever launch
-    Steam so you could sign in and install something. Chicken and egg.
+    A console shows games, not the store client that runs them — so Steam does
+    not get a tile. But a fresh install still needs a way in to sign in and
+    install something, so these stay launchable and Settings exposes them.
     """
 
     name = "system"
@@ -346,9 +362,8 @@ class SystemProvider(Provider):
                 provider=self.name,
                 launch=launch,
                 accent=e["accent"],
-                # Sorts last among never-played, so real games outrank it once
-                # the library has anything in it.
                 last_played=None,
+                hidden=True,
             ))
         return out
 
