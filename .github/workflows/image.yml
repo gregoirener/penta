@@ -72,7 +72,10 @@ jobs:
     name: build disk image
     needs: menu
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 45 was sized for an image whose root was accidentally empty. With 5.3 GB
+    # of OS actually in it, copying, zstd and xz all take real time before QEMU
+    # even starts — and the job was being cancelled mid-boot-test.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
