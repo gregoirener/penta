@@ -246,13 +246,21 @@ jobs:
           print("partition table OK")
           PYEOF
 
+      # Separate artifacts, not one bundle. Downloading the pair means pulling
+      # ~4 GB to get the ~1.8 GB you actually want, and GitHub throttles hard
+      # enough that the wasted half is measured in tens of minutes.
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: penta-image
-          path: |
-            out/*.img.zst
-            out/*.img.xz
+          name: penta-image-xz
+          path: out/*.img.xz
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: penta-image-zst
+          path: out/*.img.zst
           retention-days: 14
 
       - name: Boot it in QEMU and photograph the screen
