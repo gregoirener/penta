@@ -65,15 +65,60 @@ def accent_for(name: str) -> str:
 
 _ACF_KEY = re.compile(r'"(\w+)"\s+"([^"]*)"')
 
+# Steam installation roots, not steamapps dirs — the library folders are
+# discovered from inside them.
 STEAM_ROOTS = [
     # Linux
-    "~/.steam/steam/steamapps",
-    "~/.local/share/Steam/steamapps",
-    "~/.steam/root/steamapps",
-    "~/.var/app/com.valvesoftware.Steam/data/Steam/steamapps",  # flatpak
+    "~/.steam/steam",
+    "~/.local/share/Steam",
+    "~/.steam/root",
+    "~/.steam/debian-installation",
+    "~/.var/app/com.valvesoftware.Steam/data/Steam",       # flatpak
+    "/usr/lib/steam",
     # macOS — so the real library is testable on the dev machine
-    "~/Library/Application Support/Steam/steamapps",
+    "~/Library/Application Support/Steam",
 ]
+
+# libraryfolders.vdf lists every drive Steam installs to. Without parsing it we
+# would only ever see games on the boot disk, which is exactly the case people
+# with a second SSD care about.
+_VDF_PATH = re.compile(r'"path"\s+"([^"]+)"')
+
+
+def steam_install_roots() -> List[Path]:
+    """Every Steam installation directory present on this machine."""
+    out = []
+    for root in STEAM_ROOTS:
+        p = Path(os.path.expanduser(root))
+        if p.is_dir() and (p / "steamapps").is_dir():
+            resolved = p.resolve()
+            if resolved not in out:
+                out.append(resolved)
+    return out
+
+
+def steam_library_dirs() -> List[Path]:
+    """Every steamapps/ directory, including libraries on other drives."""
+    libs: List[Path] = []
+
+    def add(p: Path) -> None:
+        if p.is_dir() and p not in libs:
+            libs.append(p)
+
+    for root in steam_install_roots():
+        add(root / "steamapps")
+        vdf = root / "steamapps" / "libraryfolders.vdf"
+        if not vdf.is_file():
+            continue
+        try:
+            text = vdf.read_text(errors="replace")
+        except OSError as exc:
+            log.warning("unreadable %s: %s", vdf, exc)
+            continue
+        for raw in _VDF_PATH.findall(text):
+            # Paths in the vdf are escaped Windows-style even on Unix.
+            add(Path(raw.replace("\\\\", "/")) / "steamapps")
+    return libs
 
 # Steam serves cover art publicly, no API key and no account needed. This is
 # what makes the dashboard look like a console instead of a file browser, and
@@ -100,15 +145,33 @@ class SteamProvider(Provider):
 
     def scan(self) -> List[Title]:
         out: List[Title] = []
-        for root in STEAM_ROOTS:
-            base = Path(os.path.expanduser(root))
-            if not base.is_dir():
-                continue
+        seen = set()
+        libs = steam_library_dirs()
+        for base in libs:
             for acf in base.glob("appmanifest_*.acf"):
                 t = self._parse(acf)
-                if t:
+                if t and t.uid not in seen:
+                    seen.add(t.uid)
                     out.append(t)
+        log.info("steam: %d install(s), %d library folder(s), %d games",
+                 len(steam_install_roots()), len(libs), len(out))
         return out
+
+    @staticmethod
+    def status() -> dict:
+        """What we actually found — so the UI can say 'Steam installed, no
+        games' instead of showing an empty list and leaving you guessing."""
+        roots = steam_install_roots()
+        libs = steam_library_dirs()
+        games = 0
+        for base in libs:
+            games += len(list(base.glob("appmanifest_*.acf")))
+        return {
+            "installed": bool(roots),
+            "roots": [str(p) for p in roots],
+            "libraries": [str(p) for p in libs],
+            "games": games,
+        }
 
     def _parse(self, path: Path) -> Optional[Title]:
         try:
@@ -251,17 +314,37 @@ class SystemProvider(Provider):
         },
     ]
 
-    def scan(self) -> List[Title]:
+    @staticmethod
+    def _find(binary: str) -> Optional[List[str]]:
+        """Launch argv for a system app, or None if it isn't installed.
+
+        macOS keeps apps in bundles rather than on PATH, so `which steam` finds
+        nothing on a Mac that plainly has Steam. Being able to run the daemon in
+        real mode on the dev machine is worth the six lines.
+        """
         import shutil
+        import sys
+        if shutil.which(binary):
+            return None            # caller uses its own argv
+        if sys.platform == "darwin":
+            app = {"steam": "/Applications/Steam.app",
+                   "retroarch": "/Applications/RetroArch.app"}.get(binary)
+            if app and os.path.isdir(app):
+                return ["open", "-a", app]
+        return ["__missing__"]
+
+    def scan(self) -> List[Title]:
         out = []
         for e in self.ENTRIES:
-            if not shutil.which(e["bin"]):
+            mac = self._find(e["bin"])
+            if mac == ["__missing__"]:
                 continue
+            launch = mac if mac else e["launch"]
             out.append(Title(
                 uid=e["uid"],
                 name=e["name"],
                 provider=self.name,
-                launch=e["launch"],
+                launch=launch,
                 accent=e["accent"],
                 # Sorts last among never-played, so real games outrank it once
                 # the library has anything in it.

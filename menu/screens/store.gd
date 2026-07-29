@@ -148,8 +148,8 @@ func _section_items(key: String) -> Array:
 	var seen := {}
 	var out := []
 	for it in raw:
-		var id := str(it.get("id", ""))
-		if id.is_empty() or seen.has(id):
+		var id := str(int(it.get("id", 0)))
+		if id.is_empty() or id == "0" or seen.has(id):
 			continue
 		seen[id] = true
 		out.append(it)
@@ -201,7 +201,7 @@ func _make_card(item: Dictionary, i: int) -> Control:
 	holder.add_child(img)
 	holder.set_meta("img", img)
 
-	var uid := "store:%s" % str(item.get("id", ""))
+	var uid := "store:%d" % int(item.get("id", 0))
 	var url := str(item.get("header_image", ""))
 	var tex: Texture2D = Art.get_art(uid, "store", url)
 	if tex:
@@ -232,7 +232,7 @@ func _on_art_ready(uid: String, kind: String, texture: Texture2D) -> void:
 	if kind != "store" or not _open:
 		return
 	for i in _cards.size():
-		if "store:%s" % str(_items[i].get("id", "")) == uid:
+		if "store:%d" % int(_items[i].get("id", 0)) == uid:
 			var img: TextureRect = _cards[i].get_meta("img")
 			img.texture = texture
 			img.modulate.a = 0.0
@@ -334,7 +334,8 @@ func _move(delta: int) -> void:
 func _open_in_steam() -> void:
 	if _cards.is_empty():
 		return
-	var appid := str(_items[_index].get("id", ""))
+	# JSON numbers arrive as floats in Godot; "1675200.0" is not an appid.
+	var appid := str(int(_items[_index].get("id", 0)))
 	_status.text = "Opening in Steam…"
 	Ipc.request("steam.store", {"appid": appid}, func(ok: bool, payload: Variant) -> void:
 		_status.text = "Opened in Steam" if ok else "Steam unavailable: %s" % str(payload))

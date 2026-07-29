@@ -127,21 +127,41 @@ async def run(mock: bool) -> None:
         """Open a store page in Steam. The store screen browses the catalogue in
         our own UI, but buying stays in Steam — payments and account handling
         are not something to reimplement."""
-        appid = str(args.get("appid", "")).strip()
-        if not appid.isdigit():
-            raise ValueError(f"bad appid {appid!r}")
+        # Godot parses JSON numbers as floats, so an appid arrives as
+        # "1675200.0". Normalise rather than rejecting it.
+        raw = str(args.get("appid", "")).strip()
+        try:
+            appid = str(int(float(raw)))
+        except ValueError:
+            raise ValueError(f"bad appid {raw!r}") from None
         url = f"steam://store/{appid}"
         if mock:
             log.info("[mock] would open %s", url)
             return {"ok": True, "url": url, "mock": True}
         import shutil as _shutil
-        if not _shutil.which("steam"):
+        import sys as _sys
+        if _shutil.which("steam"):
+            argv = ["steam", url]
+        elif _sys.platform == "darwin":
+            argv = ["open", url]          # macOS resolves steam:// itself
+        else:
             raise RuntimeError("Steam is not installed")
         await asyncio.create_subprocess_exec(
-            "steam", url,
+            *argv,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL)
         return {"ok": True, "url": url}
+
+    @server.command("steam.status")
+    async def _steam_status(_args):
+        """Where Steam is and how many games it has.
+
+        'Installed but empty' and 'not installed' look identical in an empty
+        library, so the UI needs to be able to tell them apart."""
+        if mock:
+            return {"installed": True, "games": 10, "libraries": ["(mock)"],
+                    "roots": ["(mock)"]}
+        return SteamProvider.status()
 
     @server.command("storage.usage")
     async def _storage(_args):

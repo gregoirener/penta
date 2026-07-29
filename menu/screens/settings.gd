@@ -87,6 +87,8 @@ func _build_rows() -> void:
 		{"label": "Controllers",      "value": "…", "kind": Kind.ACTION,
 		 "action": "controller.rescan",
 		 "detail": "Scan for controllers. Pair a DualSense by holding Create + PS."},
+		{"label": "Steam",            "value": "…", "kind": Kind.INFO,
+		 "detail": "Where Steam is installed and how many games it has."},
 		{"label": "Hardware check",   "value": "…", "kind": Kind.INFO,
 		 "detail": "Results of the probe that ran on first boot."},
 		{"label": "Refresh library",  "value": "", "kind": Kind.ACTION,
@@ -135,14 +137,30 @@ func _refresh_live() -> void:
 			txt += "  ·  %d%%" % int((b as Dictionary).get("pct", 0))
 		_set_value(1, txt))
 
+	Ipc.request("steam.status", {}, func(ok: bool, p: Variant) -> void:
+		if not ok or not _open:
+			return
+		var d: Dictionary = p
+		if not d.get("installed", false):
+			_set_value(2, "not installed")
+			return
+		var libs: Array = d.get("libraries", [])
+		_set_value(2, "%d games  ·  %d librar%s" % [
+			int(d.get("games", 0)), libs.size(),
+			"y" if libs.size() == 1 else "ies"])
+		# The detail line carries the paths, which is what you actually need
+		# when the count is zero and you expected it not to be.
+		if not libs.is_empty() and _index == 2:
+			_detail.text = str(libs[0]))
+
 	Ipc.request("system.selftest", {}, func(ok: bool, p: Variant) -> void:
 		if not ok or not _open:
 			return
 		var d: Dictionary = p
 		if not d.get("ran", true):
-			_set_value(2, "not run yet")
+			_set_value(3, "not run yet")
 		else:
-			_set_value(2, "%d passed, %d failed" % [
+			_set_value(3, "%d passed, %d failed" % [
 				int(d.get("pass", 0)), int(d.get("fail", 0))]))
 
 func _set_value(i: int, text: String) -> void:
