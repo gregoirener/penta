@@ -66,10 +66,30 @@ def accent_for(name: str) -> str:
 _ACF_KEY = re.compile(r'"(\w+)"\s+"([^"]*)"')
 
 STEAM_ROOTS = [
+    # Linux
     "~/.steam/steam/steamapps",
     "~/.local/share/Steam/steamapps",
-    "~/.var/app/com.valvesoftware.Steam/data/Steam/steamapps",
+    "~/.steam/root/steamapps",
+    "~/.var/app/com.valvesoftware.Steam/data/Steam/steamapps",  # flatpak
+    # macOS — so the real library is testable on the dev machine
+    "~/Library/Application Support/Steam/steamapps",
 ]
+
+# Steam serves cover art publicly, no API key and no account needed. This is
+# what makes the dashboard look like a console instead of a file browser, and
+# it removes the SteamGridDB key that M2 was going to need.
+STEAM_CDN = "https://cdn.cloudflare.steamstatic.com/steam/apps"
+
+
+def steam_art(appid: str) -> Dict[str, str]:
+    return {
+        # 600x900 portrait, centre-cropped into the square tile by the menu.
+        "cover": f"{STEAM_CDN}/{appid}/library_600x900.jpg",
+        "hero":  f"{STEAM_CDN}/{appid}/library_hero.jpg",
+        "logo":  f"{STEAM_CDN}/{appid}/logo.png",
+        # Not every title has a portrait capsule; header always exists.
+        "fallback": f"{STEAM_CDN}/{appid}/header.jpg",
+    }
 
 # Runtimes and redistributables live in the same folder as real games.
 STEAM_SKIP = {"228980", "1070560", "1391110", "1493710", "1628350"}
@@ -112,6 +132,7 @@ class SteamProvider(Provider):
             launch=["steam", f"steam://rungameid/{appid}"],
             accent=accent_for(name),
             last_played=float(last) if last and last.isdigit() and int(last) else None,
+            art=steam_art(appid),
         )
 
 
@@ -260,31 +281,34 @@ class MockProvider(Provider):
 
     name = "mock"
 
+    # Real Steam appids: the mock then pulls genuine cover art from Steam's CDN,
+    # so what you see on the dev machine is what the console will look like.
     _GAMES = [
-        ("Elden Ring", "steam", 412_000, 3_600),
-        ("Cyberpunk 2077", "steam", 190_000, 86_400),
-        ("The Witcher 3", "steam", 530_000, 250_000),
-        ("Red Dead Redemption 2", "steam", 88_000, 600_000),
-        ("Baldur's Gate 3", "steam", 305_000, 5_400),
-        ("Chrono Trigger", "rom", 21_000, 900_000),
-        ("Metroid Prime", "rom", 0, None),
-        ("Orbitfall", "native", 1_400, 120),
-        ("Fallout 4", "steam", 64_000, None),
+        ("Elden Ring",             "1245620", 412_000, 3_600),
+        ("Cyberpunk 2077",         "1091500", 190_000, 86_400),
+        ("The Witcher 3",          "292030",  530_000, 250_000),
+        ("Red Dead Redemption 2",  "1174180",  88_000, 600_000),
+        ("Baldur's Gate 3",        "1086940", 305_000, 5_400),
+        ("Hades",                  "1145360",  42_000, 900_000),
+        ("Hollow Knight",          "367520",   18_000, None),
+        ("Stardew Valley",         "413150",   96_000, 12_000),
+        ("DOOM Eternal",           "782330",   31_000, None),
+        ("Disco Elysium",          "632470",   27_000, 300_000),
     ]
 
     def scan(self) -> List[Title]:
         now = time.time()
         out = []
-        for i, (name, provider, playtime, ago) in enumerate(self._GAMES):
-            slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+        for name, appid, playtime, ago in self._GAMES:
             out.append(Title(
-                uid=f"{provider}:{slug}",
+                uid=f"steam:{appid}",
                 name=name,
-                provider=provider,
+                provider="steam",
                 launch=["true"],
                 accent=accent_for(name),
                 last_played=None if ago is None else now - ago,
                 playtime_s=playtime,
+                art=steam_art(appid),
             ))
         return out
 

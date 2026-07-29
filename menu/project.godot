@@ -18,6 +18,7 @@ boot_splash/bg_color=Color(0.043, 0.051, 0.063, 1)
 Tokens="*res://core/tokens.gd"
 Ipc="*res://core/ipc_client.gd"
 Router="*res://core/input_router.gd"
+Art="*res://core/art.gd"
 
 [display]
 

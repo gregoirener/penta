@@ -33,6 +33,8 @@ var _status_label: Label
 var _launch_veil: ColorRect
 var _control: ControlCenter
 var _power: PowerMenu
+var _library: LibraryScreen
+var _settings: SettingsScreen
 
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -72,12 +74,14 @@ func _dev_capture_if_requested() -> void:
 	var args := OS.get_cmdline_user_args()
 	if args.is_empty():
 		return
-	await get_tree().create_timer(1.6).timeout
+	await get_tree().create_timer(6.0).timeout   # let cover art arrive
 	if args.size() > 1:
 		match args[1]:
-			"control": _control.open(false)
-			"power":   _power.open()
-		await get_tree().create_timer(0.9).timeout
+			"control":  _control.open(false)
+			"power":    _power.open()
+			"library":  _library.open(_titles)
+			"settings": _settings.open()
+		await get_tree().create_timer(1.4).timeout
 	for i in 3:
 		await RenderingServer.frame_post_draw
 	get_viewport().get_texture().get_image().save_png(args[0])
@@ -147,6 +151,13 @@ func _build_overlays() -> void:
 
 	_power = PowerMenu.new()
 	add_child(_power)
+
+	_library = LibraryScreen.new()
+	add_child(_library)
+	_library.launch_requested.connect(_on_library_launch)
+
+	_settings = SettingsScreen.new()
+	add_child(_settings)
 
 func _build_veil() -> void:
 	# Covers the screen while a title launches, so the handoff to gamescope is
@@ -268,7 +279,10 @@ func _format_meta(t: Dictionary) -> String:
 # --- Actions ------------------------------------------------------------------
 
 func _on_confirm() -> void:
-	if _row_focus != Row.CARDS or _cards.is_empty():
+	if _row_focus == Row.ICONS:
+		_activate_icon()
+		return
+	if _cards.is_empty():
 		return
 	var t: Dictionary = _titles[_card_index]
 	_set_status("Starting %s…" % str(t.get("name", "")))
@@ -284,6 +298,36 @@ func _on_confirm() -> void:
 			_set_status("Launch failed: %s" % str(payload))
 			_restore_from_launch()
 	)
+
+## Top row actions. Search and Profile are honest placeholders — they say so
+## rather than silently doing nothing, which is worse than being unfinished.
+func _activate_icon() -> void:
+	match _icon_index:
+		0:  # Search — needs an on-screen keyboard; the grid is the useful half.
+			_set_status("Search needs an on-screen keyboard — opening Library")
+			_library.open(_titles)
+		1:  # Library
+			_library.open(_titles)
+		2:  # Store — Steam owns the store; Big Picture is controller-navigable.
+			_set_status("Opening Steam Store…")
+			Ipc.request("title.launch", {"uid": "system:steam"},
+				func(ok: bool, payload: Variant) -> void:
+					if not ok:
+						_set_status("Steam is not installed on this system"))
+		3:  # Settings
+			_settings.open()
+		4:  # Profile
+			_set_status("Profiles land with multi-user support")
+
+func _on_library_launch(uid: String) -> void:
+	await _library.close()
+	for i in _titles.size():
+		if str(_titles[i].get("uid", "")) == uid:
+			_card_index = i
+			_row_focus = Row.CARDS
+			_apply_focus(false)
+			break
+	_on_confirm()
 
 func _on_back() -> void:
 	if _row_focus == Row.ICONS:

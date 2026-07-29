@@ -13,7 +13,9 @@ const FOCUS_SCALE := 1.10
 var title: Dictionary = {}
 var accent: Color = Tokens.ACCENT
 
+var _uid := ""
 var _art: TextureRect
+var _cover: TextureRect
 var _shade: ColorRect
 var _name: Label
 var _ring: Panel
@@ -22,6 +24,7 @@ var _focused := false
 func setup(t: Dictionary) -> void:
 	title = t
 	accent = Color(str(t.get("accent", "#2f6fe4")))
+	_uid = str(t.get("uid", ""))
 	custom_minimum_size = SIZE
 	size = SIZE
 	pivot_offset = SIZE * 0.5          # scale from the centre, not the corner
@@ -32,6 +35,49 @@ func setup(t: Dictionary) -> void:
 	_build_name()
 	_build_ring()
 	_apply_focus(false, true)
+	_request_cover()
+
+## Real cover art if Steam has it, generated gradient until then.
+##
+## The gradient stays underneath rather than being replaced: a card is never
+## blank, never shows a broken image, and the swap is a fade rather than a pop.
+func _request_cover() -> void:
+	var art: Dictionary = title.get("art", {})
+	if art.is_empty():
+		return
+
+	_cover = TextureRect.new()
+	_cover.size = SIZE
+	_cover.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	# Portrait capsules are 2:3; centre-crop into the square tile so the key
+	# artwork survives instead of being squashed.
+	_cover.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	_cover.clip_contents = true
+	_cover.modulate.a = 0.0
+	add_child(_cover)
+	move_child(_cover, 1)              # above the gradient, below the shade
+
+	var tex: Texture2D = Art.get_art(_uid, "cover", str(art.get("cover", "")))
+	if tex:
+		_show_cover(tex)
+	else:
+		Art.art_ready.connect(_on_art_ready)
+
+func _on_art_ready(uid: String, kind: String, texture: Texture2D) -> void:
+	if uid != _uid:
+		return
+	if kind == "cover":
+		_show_cover(texture)
+	elif kind == "fallback" and _cover and _cover.texture == null:
+		_show_cover(texture)
+
+func _show_cover(tex: Texture2D) -> void:
+	if not _cover:
+		return
+	_cover.texture = tex
+	var t := create_tween()
+	t.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
+	t.tween_property(_cover, "modulate:a", 1.0, Tokens.dur(Tokens.D_NORMAL))
 
 func _build_art() -> void:
 	var grad := Gradient.new()
