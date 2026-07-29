@@ -159,8 +159,25 @@ jobs:
               echo "--- final ESP ---"
               find /mnt/esp -maxdepth 3 | sed "s|/mnt/esp|ESP|"
               test -f /mnt/esp/EFI/BOOT/BOOTX64.EFI
-              sync
               umount /mnt/esp
+
+              # --- Is there actually an OS on the root partition? ----------
+              # A missing CopyFiles= in the repart definition produces a
+              # perfectly valid, perfectly empty root, and the only symptom is
+              # switch-root failing into emergency mode 20 minutes later in
+              # QEMU. Check it here, where the error names the cause.
+              mkdir -p /mnt/root
+              mount "${loop}p2" /mnt/root
+              echo "--- root filesystem ---"
+              ls /mnt/root
+              du -sh /mnt/root 2>/dev/null | tail -1
+              for f in /usr/lib/systemd/systemd /usr/bin/gamescope /opt/penta/penta-menu; do
+                test -e "/mnt/root$f" || { echo "MISSING from root: $f"; exit 1; }
+                echo "  ok  $f"
+              done
+              umount /mnt/root
+
+              sync
               losetup -d "$loop"
             '
           sudo chown -R "$(id -u):$(id -g)" out
