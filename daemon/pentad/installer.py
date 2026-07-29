@@ -33,6 +33,9 @@ log = logging.getLogger("pentad.installer")
 # Below this and it cannot hold the console.
 MIN_TARGET_BYTES = 20 * 1024 ** 3
 
+# The discoverable-partitions GUID for an EFI System Partition.
+ESP_TYPE_GUID = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+
 # Mock topology, so the confirmation guards can be exercised on a machine that
 # has neither lsblk nor a disk worth destroying. The guards are the part most
 # worth testing and the part hardest to test safely.
@@ -234,6 +237,7 @@ class Installer:
                 if code != 0:
                     log.warning("sgdisk -e failed: %s", err.strip())
 
+            await self._register_boot_entry(target)
             await _run("sync")
             self._emit("install.done", ok=True, target=target)
             log.info("installed to %s", target)
@@ -243,6 +247,73 @@ class Installer:
             self._emit("install.done", ok=False, error=str(exc))
         finally:
             self._running = False
+
+
+    async def _register_boot_entry(self, target: str) -> None:
+        """Add a firmware boot entry for the installed disk and make it first.
+
+        The clone already carries EFI/BOOT/BOOTX64.EFI, which most firmware will
+        boot as removable media — but that is a fallback, not a guarantee, and
+        the machine may still have a stale entry ahead of it pointing at the
+        operating system we just erased. An explicit NVRAM entry set first in
+        BootOrder is what makes the machine boot PENTA and nothing else.
+
+        Never fatal: a console that boots via the fallback path is still a
+        console, and refusing to finish an otherwise good install over this
+        would be worse than the problem.
+        """
+        if not shutil.which("efibootmgr"):
+            log.warning("efibootmgr missing; relying on the removable-media path")
+            return
+        if not os.path.isdir("/sys/firmware/efi"):
+            log.warning("not booted via UEFI; skipping boot entry")
+            return
+
+        # efibootmgr wants the disk and the ESP's partition number separately.
+        esp_part = _esp_partition_number(target)
+        if esp_part is None:
+            log.warning("no ESP found on %s; skipping boot entry", target)
+            return
+
+        self._emit("install.progress", stage="registering boot entry", percent=99.5)
+
+        # Drop any previous PENTA entries so reinstalling does not accumulate
+        # a menu full of identical duplicates.
+        code, out, _ = await _run("efibootmgr")
+        if code == 0:
+            for line in out.splitlines():
+                if "PENTA" in line and line.startswith("Boot"):
+                    num = line[4:8]
+                    if num.isalnum():
+                        await _run("efibootmgr", "-B", "-b", num)
+
+        code, _, err = await _run(
+            "efibootmgr", "--create",
+            "--disk", target,
+            "--part", str(esp_part),
+            "--label", "PENTA",
+            "--loader", "\\EFI\\BOOT\\BOOTX64.EFI")
+        if code != 0:
+            log.warning("could not create boot entry: %s", err.strip())
+            return
+        log.info("registered PENTA boot entry on %s partition %d", target, esp_part)
+
+
+def _esp_partition_number(disk: str) -> Optional[int]:
+    """Partition number of the EFI System Partition on a disk."""
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["lsblk", "-J", "-o", "NAME,PARTTYPE", disk],
+            capture_output=True, text=True, timeout=10).stdout
+        tree = json.loads(out).get("blockdevices", [])
+        kids = tree[0].get("children", []) if tree else []
+        for i, part in enumerate(kids, start=1):
+            if (part.get("parttype") or "").lower() == ESP_TYPE_GUID:
+                return i
+    except Exception as exc:                                    # noqa: BLE001
+        log.warning("could not identify the ESP: %s", exc)
+    return None
 
 
 def _device_size(device: str) -> int:
