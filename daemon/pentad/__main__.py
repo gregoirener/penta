@@ -122,6 +122,27 @@ async def run(mock: bool) -> None:
         except (OSError, ValueError) as exc:
             raise RuntimeError(f"unreadable selftest results: {exc}") from exc
 
+    @server.command("steam.store")
+    async def _steam_store(args):
+        """Open a store page in Steam. The store screen browses the catalogue in
+        our own UI, but buying stays in Steam — payments and account handling
+        are not something to reimplement."""
+        appid = str(args.get("appid", "")).strip()
+        if not appid.isdigit():
+            raise ValueError(f"bad appid {appid!r}")
+        url = f"steam://store/{appid}"
+        if mock:
+            log.info("[mock] would open %s", url)
+            return {"ok": True, "url": url, "mock": True}
+        import shutil as _shutil
+        if not _shutil.which("steam"):
+            raise RuntimeError("Steam is not installed")
+        await asyncio.create_subprocess_exec(
+            "steam", url,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL)
+        return {"ok": True, "url": url}
+
     @server.command("storage.usage")
     async def _storage(_args):
         return storage.usage()

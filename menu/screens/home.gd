@@ -35,6 +35,8 @@ var _control: ControlCenter
 var _power: PowerMenu
 var _library: LibraryScreen
 var _settings: SettingsScreen
+var _store: StoreScreen
+var _profile: ProfileScreen
 
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -81,7 +83,9 @@ func _dev_capture_if_requested() -> void:
 			"power":    _power.open()
 			"library":  _library.open(_titles)
 			"settings": _settings.open()
-		await get_tree().create_timer(1.4).timeout
+			"store":    _store.open()
+			"profile":  _profile.open(_titles)
+		await get_tree().create_timer(7.0).timeout
 	for i in 3:
 		await RenderingServer.frame_post_draw
 	get_viewport().get_texture().get_image().save_png(args[0])
@@ -158,6 +162,12 @@ func _build_overlays() -> void:
 
 	_settings = SettingsScreen.new()
 	add_child(_settings)
+
+	_store = StoreScreen.new()
+	add_child(_store)
+
+	_profile = ProfileScreen.new()
+	add_child(_profile)
 
 func _build_veil() -> void:
 	# Covers the screen while a title launches, so the handoff to gamescope is
@@ -308,16 +318,12 @@ func _activate_icon() -> void:
 			_library.open(_titles)
 		1:  # Library
 			_library.open(_titles)
-		2:  # Store — Steam owns the store; Big Picture is controller-navigable.
-			_set_status("Opening Steam Store…")
-			Ipc.request("title.launch", {"uid": "system:steam"},
-				func(ok: bool, payload: Variant) -> void:
-					if not ok:
-						_set_status("Steam is not installed on this system"))
+		2:  # Store — Steam's catalogue, our UI. Buying happens in Steam.
+			_store.open()
 		3:  # Settings
 			_settings.open()
 		4:  # Profile
-			_set_status("Profiles land with multi-user support")
+			_profile.open(_titles)
 
 func _on_library_launch(uid: String) -> void:
 	await _library.close()
