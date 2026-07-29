@@ -314,7 +314,9 @@ func _on_daemon_event(event_name: String, args: Dictionary) -> void:
 			_running_uid = ""
 			_set_status("")
 			_restore_from_launch()
-			Ipc.request("library.list", {}, _on_library)
+			# refresh, not list: you may have just installed a game inside
+			# Steam, and a cached library would not show it until a reboot.
+			Ipc.request("library.refresh", {}, _on_library)
 		"input.ps_button":
 			# The real PS button, seen by the daemon at the evdev layer — it
 			# arrives even while a game holds focus, which is the entire point.

@@ -199,6 +199,56 @@ class RomProvider(Provider):
         return out
 
 
+# --- Built-in system entries --------------------------------------------------
+
+class SystemProvider(Provider):
+    """Entries the console always offers, independent of any library.
+
+    Without this a fresh install shows an empty dashboard and no way to fix it:
+    the Steam provider reads Steam's manifests, but nothing would ever launch
+    Steam so you could sign in and install something. Chicken and egg.
+    """
+
+    name = "system"
+
+    ENTRIES = [
+        {
+            "uid": "system:steam",
+            "name": "Steam",
+            "bin": "steam",
+            # Big Picture is controller-navigable, which matters because there
+            # is no mouse and no desktop to fall back to.
+            "launch": ["steam", "-tenfoot", "-steamos"],
+            "accent": "#1b2838",
+        },
+        {
+            "uid": "system:retroarch",
+            "name": "RetroArch",
+            "bin": "retroarch",
+            "launch": ["retroarch"],
+            "accent": "#2f6fe4",
+        },
+    ]
+
+    def scan(self) -> List[Title]:
+        import shutil
+        out = []
+        for e in self.ENTRIES:
+            if not shutil.which(e["bin"]):
+                continue
+            out.append(Title(
+                uid=e["uid"],
+                name=e["name"],
+                provider=self.name,
+                launch=e["launch"],
+                accent=e["accent"],
+                # Sorts last among never-played, so real games outrank it once
+                # the library has anything in it.
+                last_played=None,
+            ))
+        return out
+
+
 # --- Mock ---------------------------------------------------------------------
 
 class MockProvider(Provider):
@@ -263,10 +313,13 @@ class Library:
         return self.sorted()
 
     def sorted(self) -> List[Title]:
-        # Recently played first, never-played last. Matches what a console does
-        # and means the card you want is almost always the focused one.
-        return sorted(self._titles.values(),
-                      key=lambda t: (t.last_played is None, -(t.last_played or 0)))
+        # Recently played first, never-played next, system entries last — so
+        # Steam is always reachable but never in the way once you own games.
+        return sorted(
+            self._titles.values(),
+            key=lambda t: (t.provider == "system",
+                           t.last_played is None,
+                           -(t.last_played or 0)))
 
     def get(self, uid: str) -> Title:
         if uid not in self._titles:

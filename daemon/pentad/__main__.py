@@ -21,7 +21,7 @@ from .server import Server
 from .session import SessionManager
 from .storage import StorageService
 from .titles import (Library, MockProvider, NativeProvider, RomProvider,
-                     SteamProvider)
+                     SteamProvider, SystemProvider)
 
 log = logging.getLogger("pentad")
 
@@ -31,7 +31,8 @@ BATTERY_POLL_S = 30.0
 def build_library(mock: bool) -> Library:
     if mock:
         return Library([MockProvider()])
-    return Library([SteamProvider(), NativeProvider(), RomProvider()])
+    return Library([SteamProvider(), NativeProvider(), RomProvider(),
+                    SystemProvider()])
 
 
 async def run(mock: bool) -> None:
