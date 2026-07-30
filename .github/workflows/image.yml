@@ -264,7 +264,6 @@ jobs:
           name: penta-image-zst
           path: out/*.img.zst
           retention-days: 1
-          retention-days: 14
 
       - name: Boot it in QEMU and photograph the screen
         continue-on-error: true
