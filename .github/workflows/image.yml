@@ -254,13 +254,16 @@ jobs:
         with:
           name: penta-image-xz
           path: out/*.img.xz
-          retention-days: 14
+          retention-days: 1
 
+      # The zst exists for streaming to dd; the xz is what gets flashed. Keeping
+      # both doubles storage against a 500 MB free quota, so this one is opt-in.
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && inputs.release
         with:
           name: penta-image-zst
           path: out/*.img.zst
+          retention-days: 1
           retention-days: 14
 
       - name: Boot it in QEMU and photograph the screen
@@ -343,7 +346,7 @@ jobs:
         with:
           name: boot-screenshots
           path: /tmp/shots/*.png
-          retention-days: 14
+          retention-days: 3
 
       - uses: actions/upload-artifact@v4
         if: always()
