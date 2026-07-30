@@ -1,9 +1,14 @@
 name: build image
 
-# Builds the PENTA disk image on a free x86_64 runner, because the dev Mac is
-# arm64 and building an x86_64 Arch userspace under emulation takes hours.
-# The artifact is streamed to the SSD by tools/flash.sh and never stored on the
-# Mac — see docs/FLASHING.md.
+# One job, no artifacts.
+#
+# Actions artifact storage on a private repo is 500 MB and a single image is
+# ~2 GB, so every build failed on quota — and deleting old artifacts does not
+# help, because usage is only recalculated every 6-12 hours. Release assets are
+# billed separately and do not touch that quota.
+#
+# Merging the menu and image builds into one job also removes the only reason
+# artifacts were needed at all: handing the Godot export between jobs.
 
 on:
   push:
@@ -14,27 +19,25 @@ on:
       - 'menu/**'
       - '.github/workflows/image.yml'
   workflow_dispatch:
-    inputs:
-      release:
-        description: 'Publish as a release'
-        type: boolean
-        default: false
-
-env:
-  GODOT_VERSION: 4.7.1
 
 # The default GITHUB_TOKEN is read-only for contents, so creating a release
 # comes back 403 "Resource not accessible by integration".
 permissions:
   contents: write
 
+env:
+  GODOT_VERSION: 4.7.1
+
 jobs:
-  menu:
-    name: build menu
+  build:
+    name: build console image
     runs-on: ubuntu-latest
+    timeout-minutes: 90
+
     steps:
       - uses: actions/checkout@v4
 
+      # --- Menu -------------------------------------------------------------
       - name: Fetch Godot + export templates
         run: |
           set -euo pipefail
@@ -44,72 +47,43 @@ jobs:
           unzip -q "Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
           chmod +x "Godot_v${GODOT_VERSION}-stable_linux.x86_64"
           sudo mv "Godot_v${GODOT_VERSION}-stable_linux.x86_64" /usr/local/bin/godot
-
-          # Export templates must sit at the exact version path Godot expects.
           tdir="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
           mkdir -p "$tdir"
           unzip -q "Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
           mv templates/* "$tdir/"
 
-      - name: Import project
-        # First run populates .godot/; without it the export finds no resources.
-        run: godot --headless --path menu --import || true
-
-      - name: Export
+      - name: Export the menu
         run: |
+          set -euo pipefail
+          godot --headless --path menu --import || true
           mkdir -p build
           godot --headless --path menu \
                 --export-release "Linux x86_64" "$GITHUB_WORKSPACE/build/penta-menu"
           chmod +x build/penta-menu
           file build/penta-menu
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: penta-menu
-          path: build/penta-menu
-
-  image:
-    name: build disk image
-    needs: menu
-    runs-on: ubuntu-latest
-    # 45 was sized for an image whose root was accidentally empty. With 5.3 GB
-    # of OS actually in it, copying, zstd and xz all take real time before QEMU
-    # even starts — and the job was being cancelled mid-boot-test.
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: penta-menu
-          path: staging
-
+      # --- Image ------------------------------------------------------------
       - name: Stage payload into the image tree
         run: |
           set -euo pipefail
           root=image/mkosi/mkosi.extra
-          install -D -m 0755 staging/penta-menu "$root/opt/penta/penta-menu"
-          # The daemon ships as plain source: it is Python, and being able to
-          # read and patch it on the console at 2am is worth more than packaging.
+          install -D -m 0755 build/penta-menu "$root/opt/penta/penta-menu"
           mkdir -p "$root/opt/penta/daemon"
           cp -r daemon/pentad "$root/opt/penta/daemon/"
           install -D -m 0644 docs/DESIGN.md "$root/usr/share/penta/DESIGN.md"
           find "$root/opt/penta" -maxdepth 2
 
       - name: Free up disk
-        # The runner ships with ~14 GB free; an Arch image needs more.
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
                       /usr/local/share/boost /usr/local/.ghcup
           df -h /
 
       - name: Build
-        # mkosi runs inside an Arch container rather than on the Ubuntu host:
-        # pacman is native there, so no tools tree has to be bootstrapped, and
-        # the mkosi version tracks the same distro we are building.
-        # --privileged is required for loop devices and repart; seccomp=unconfined
-        # because pacman post-install hooks (fc-cache-32) hit blocked syscalls
-        # under Docker's default profile and die with SIGSYS.
+        # mkosi runs inside an Arch container: pacman is native there, so no
+        # tools tree has to be bootstrapped. --privileged for loop devices,
+        # seccomp=unconfined because pacman's fc-cache-32 hook hits blocked
+        # syscalls under Docker's default profile.
         run: |
           mkdir -p out
           docker run --rm --privileged \
@@ -125,54 +99,33 @@ jobs:
               mkosi --version
               mkosi --output-dir /work/out --debug build
 
-              # --- Make the ESP bootable from a bare disk ------------------
-              # systemd-boot installs to EFI/systemd/ and normally relies on an
-              # NVRAM boot entry. A dd-ed image has no such entry: firmware
-              # only tries the removable-media fallback, EFI/BOOT/BOOTX64.EFI.
-              # Without this the Nitro 5 drops to a UEFI shell exactly like
-              # QEMU did.
+              # A dd-ed disk has no NVRAM boot entry, so firmware only probes
+              # the removable-media path. Without this it drops to a UEFI shell.
               loop=$(losetup -fP --show /work/out/penta.raw)
-              mkdir -p /mnt/esp
+              mkdir -p /mnt/esp /mnt/root
               mount "${loop}p1" /mnt/esp
-              echo "--- ESP contents as built ---"
               find /mnt/esp -maxdepth 3 | sed "s|/mnt/esp|ESP|"
-
               df -h /mnt/esp
 
               if [ ! -f /mnt/esp/EFI/BOOT/BOOTX64.EFI ]; then
-                echo "--- installing removable-media fallback ---"
                 mkdir -p /mnt/esp/EFI/BOOT
-                # Prefer systemd-boot if it is there; otherwise the UKI itself.
-                # A UKI is a PE binary with the kernel, initrd and cmdline baked
-                # in, so firmware can execute it directly — no bootloader, no
-                # menu, which is what a console wants anyway.
                 src=$(find /mnt/esp/EFI -iname "systemd-boot*.efi" | head -1)
                 if [ -n "$src" ]; then
                   cp "$src" /mnt/esp/EFI/BOOT/BOOTX64.EFI
                 else
                   src=$(find /mnt/esp/EFI/Linux -iname "*.efi" | head -1)
                   test -n "$src" || { echo "nothing bootable on the ESP"; exit 1; }
-                  echo "no systemd-boot; booting the UKI directly"
-                  ls -lh "$src"
-                  # Move, not copy: two copies of a ~600 MB UKI will not fit.
                   mv "$src" /mnt/esp/EFI/BOOT/BOOTX64.EFI
                 fi
               fi
-
-              echo "--- final ESP ---"
-              find /mnt/esp -maxdepth 3 | sed "s|/mnt/esp|ESP|"
               test -f /mnt/esp/EFI/BOOT/BOOTX64.EFI
               umount /mnt/esp
 
-              # --- Is there actually an OS on the root partition? ----------
-              # A missing CopyFiles= in the repart definition produces a
-              # perfectly valid, perfectly empty root, and the only symptom is
-              # switch-root failing into emergency mode 20 minutes later in
-              # QEMU. Check it here, where the error names the cause.
-              mkdir -p /mnt/root
+              # A missing CopyFiles= produces a valid, empty root whose only
+              # symptom is switch-root failing 20 minutes later in QEMU. Fail
+              # here instead, where the message names the cause.
               mount "${loop}p2" /mnt/root
               echo "--- root filesystem ---"
-              ls /mnt/root
               du -sh /mnt/root 2>/dev/null | tail -1
               for f in /usr/lib/systemd/systemd /usr/bin/gamescope /opt/penta/penta-menu; do
                 test -e "/mnt/root$f" || { echo "MISSING from root: $f"; exit 1; }
@@ -186,184 +139,123 @@ jobs:
           sudo chown -R "$(id -u):$(id -g)" out
           ls -lh out/
 
-      - name: Name the artifact
-        # mkosi already compresses (CompressOutput=zstd in mkosi.conf), so the
-        # output is penta.raw.zst; only compress if we somehow got a raw image.
+      - name: Compress for flashing
+        # xz because Etcher, Rufus and balena read it; zstd they do not.
         run: |
           set -euo pipefail
-          target="out/penta-${GITHUB_SHA::7}.img.zst"
-          test -f out/penta.raw || { echo "no image produced:"; ls -R out; exit 1; }
-          cp --sparse=always out/penta.raw /tmp/penta.raw
-          zstd -15 -T0 --long=27 out/penta.raw -o "$target"
+          test -f out/penta.raw || { ls -R out; exit 1; }
+          TAG="build-${GITHUB_RUN_NUMBER}"
+          IMG="penta-${GITHUB_SHA::7}.img.xz"
+          xz -3 -T0 -c out/penta.raw > "out/$IMG"
           rm -f out/penta.raw
-          ls -lh "$target"
-          echo "IMAGE=$target" >> "$GITHUB_ENV"
-
-      - name: Also produce an Etcher-friendly .img.xz
-        # balenaEtcher and Rufus read xz, gz, bz2 and zip — but not zstd. The
-        # image is mostly zeros, so xz is both small and quick here.
-        run: |
-          set -euo pipefail
-          xz_target="out/penta-${GITHUB_SHA::7}.img.xz"
-          zstd -dc "$IMAGE" | xz -3 -T0 -c > "$xz_target"
-          ls -lh out/
+          ls -lh "out/$IMG"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "IMG=$IMG" >> "$GITHUB_ENV"
+          size=$(stat -c%s "out/$IMG")
+          # GitHub rejects release assets over 2 GiB.
+          test "$size" -lt 2147483648 \
+            || { echo "asset too large for a release: $size bytes"; exit 1; }
 
       - name: Check the partition table
-        # sfdisk refuses GPT on a truncated file (no backup header), so parse
-        # the primary GPT directly out of the first few MiB.
         run: |
           set +o pipefail
-          zstd -dc "$IMAGE" 2>/dev/null | dd of=/tmp/head.img bs=1M count=8 \
-               iflag=fullblock status=none || true
+          xz -dc "out/$IMG" 2>/dev/null | dd of=/tmp/head.img bs=1M count=8 \
+             iflag=fullblock status=none || true
           set -o pipefail
           python3 - <<'PYEOF'
           import struct, uuid, sys
-
           ESP = uuid.UUID("c12a7328-f81f-11d2-ba4b-00a0c93ec93b")
           data = open("/tmp/head.img", "rb").read()
-
           assert data[512:520] == b"EFI PART", "no GPT header at LBA1"
           first, count, size = struct.unpack_from("<QII", data, 512 + 72)
-          print(f"GPT: {count} entries of {size} bytes at LBA {first}")
-
           found = []
           for i in range(count):
               off = first * 512 + i * size
               raw = data[off:off + 56]
               if len(raw) < 56:
                   break
-              type_guid = uuid.UUID(bytes_le=raw[0:16])
-              if int(type_guid) == 0:
+              t = uuid.UUID(bytes_le=raw[0:16])
+              if int(t) == 0:
                   continue
               name = data[off + 56:off + 128].decode("utf-16-le").rstrip("\x00")
-              lba_start, lba_end = struct.unpack_from("<QQ", raw, 32)
-              mib = (lba_end - lba_start + 1) * 512 // 1024 // 1024
-              print(f"  {i+1}: {name or '(unnamed)'}  {mib} MiB  {type_guid}")
-              found.append(type_guid)
-
+              s, e = struct.unpack_from("<QQ", raw, 32)
+              print(f"  {i+1}: {name or '(unnamed)'}  {(e-s+1)*512//1024**3} GiB")
+              found.append(t)
           if ESP not in found:
               sys.exit("FAIL: no EFI System Partition")
           print("partition table OK")
           PYEOF
 
-      # Separate artifacts, not one bundle. Downloading the pair means pulling
-      # ~4 GB to get the ~1.8 GB you actually want, and GitHub throttles hard
-      # enough that the wasted half is measured in tens of minutes.
-      - uses: actions/upload-artifact@v4
-        if: always()
+      # --- Publish ----------------------------------------------------------
+      - name: Publish the image
+        uses: softprops/action-gh-release@v2
         with:
-          name: penta-image-xz
-          path: out/*.img.xz
-          retention-days: 1
+          tag_name: ${{ env.TAG }}
+          name: PENTA ${{ env.TAG }}
+          files: out/${{ env.IMG }}
+          body: |
+            PENTA console image from `${{ github.sha }}`.
 
-      # The zst exists for streaming to dd; the xz is what gets flashed. Keeping
-      # both doubles storage against a 500 MB free quota, so this one is opt-in.
-      - uses: actions/upload-artifact@v4
-        if: always() && inputs.release
-        with:
-          name: penta-image-zst
-          path: out/*.img.zst
-          retention-days: 1
+            Flash with Etcher, or:
+            ```
+            sudo ./tools/flash-usb.sh <image.img.xz> diskN
+            ```
+
+            Boot the USB, then Settings → Install to disk for an internal drive.
 
       - name: Boot it in QEMU and photograph the screen
         continue-on-error: true
-        # Screenshots, not just a serial log. A boot that reaches the menu and a
-        # boot that hangs on a black screen produce identical serial output when
-        # the console is deliberately quiet — but they look nothing alike.
         run: |
           set -uo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq qemu-system-x86 ovmf netcat-openbsd imagemagick
-
-          ls -lhs /tmp/penta.raw
+          xz -dc "out/$IMG" > /tmp/penta.raw
           cp /usr/share/OVMF/OVMF_VARS_4M.fd /tmp/vars.fd
-          mkdir -p /tmp/shots
+          mkdir -p /tmp/shots out/frames
 
-          # -device virtio-vga gives the guest a real framebuffer to draw on;
-          # without one there is nothing to screenshot. No KVM on runners, so
-          # this is TCG emulation and everything takes minutes, not seconds.
           qemu-system-x86_64 \
             -machine q35,accel=tcg -cpu qemu64 -m 4096 -smp 4 \
             -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
             -drive if=pflash,format=raw,unit=1,file=/tmp/vars.fd \
             -drive file=/tmp/penta.raw,format=raw,if=virtio \
-            -device virtio-vga \
-            -display none \
+            -device virtio-vga -display none \
             -serial file:/tmp/boot.log \
             -monitor telnet:127.0.0.1:5555,server,nowait \
             -no-reboot &
           QPID=$!
-          # Dense early frames: the interesting failures happen in the initrd,
-          # inside the first minute, and a 45s interval walks straight past them.
+
           sleep 8
-          for i in $(seq 1 10); do
-            printf 'screendump /tmp/shots/early%02d.ppm\n' "$i" \
+          for i in $(seq 1 26); do
+            kill -0 "$QPID" 2>/dev/null || break
+            printf 'screendump /tmp/shots/f%02d.ppm\n' "$i" \
               | timeout 10 nc 127.0.0.1 5555 >/dev/null 2>&1 || true
-            sleep 6
+            grep -aq "PENTA-BOOT-OK" /tmp/boot.log 2>/dev/null && break
+            sleep 20
           done
-
-          for i in $(seq 1 22); do
-            kill -0 "$QPID" 2>/dev/null || { echo "qemu exited early"; break; }
-            n=$(printf '%02d' "$i")
-            printf 'screendump /tmp/shots/f%s.ppm\n' "$n" \
-              | timeout 15 nc 127.0.0.1 5555 >/dev/null 2>&1 || true
-            if grep -aq "PENTA-BOOT-OK" /tmp/boot.log 2>/dev/null; then
-              echo "beacon seen at ~$((i * 45 + 20))s"
-              sleep 25
-              printf 'screendump /tmp/shots/final.ppm\n' \
-                | timeout 15 nc 127.0.0.1 5555 >/dev/null 2>&1 || true
-              break
-            fi
-            sleep 45
-          done
-
           kill "$QPID" 2>/dev/null || true
-          sleep 3
+          sleep 2
 
-          # PPM is what the monitor emits; nothing renders that in a browser.
-          for f in /tmp/shots/*.ppm; do
-            [ -e "$f" ] || continue
-            convert "$f" "${f%.ppm}.png" 2>/dev/null || true
-            rm -f "$f"
+          # Attach the last few frames to the release: a failed boot has to be
+          # visible somewhere, and artifacts are not available to us.
+          for f in $(ls -t /tmp/shots/*.ppm 2>/dev/null | head -4); do
+            convert "$f" "out/frames/boot-$(basename "${f%.ppm}").png" 2>/dev/null || true
           done
-          ls -lh /tmp/shots/ || true
+          ls -lh out/frames/ 2>/dev/null || true
 
-          echo "======== serial output ========"
-          tail -c 6000 /tmp/boot.log | tr -d '\000' || true
-          echo "==============================="
-
+          echo "======== serial ========"
+          tail -c 4000 /tmp/boot.log | tr -d '\000' || true
+          echo "========================"
           if grep -aq "PENTA-BOOT-OK" /tmp/boot.log; then
             echo "BOOT VERIFIED: $(grep -ao 'PENTA-BOOT-OK.*' /tmp/boot.log | head -1)"
           else
-            echo "did not reach penta.target within the window"
-            grep -aq "3008;start=" /tmp/boot.log && echo "  (systemd started — boot chain is fine)"
-            echo "  check the screenshots to see where it got to"
+            echo "did not reach penta.target in the window"
+            grep -aq "3008;start=" /tmp/boot.log && echo "  (systemd started)"
           fi
 
-      - uses: actions/upload-artifact@v4
+      - name: Attach boot frames
         if: always()
-        with:
-          name: boot-screenshots
-          path: /tmp/shots/*.png
-          retention-days: 3
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: boot-log
-          path: /tmp/boot.log
-          retention-days: 14
-
-      - name: Publish release
-        if: always() && inputs.release
+        continue-on-error: true
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: img-${{ github.run_number }}
-          files: out/*.img.zst
-          body: |
-            PENTA image from `${{ github.sha }}`.
-
-            Flash with:
-            ```
-            ./tools/flash.sh diskN img-${{ github.run_number }}
-            ```
+          tag_name: ${{ env.TAG }}
+          files: out/frames/*.png
