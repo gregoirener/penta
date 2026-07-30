@@ -8,6 +8,7 @@ class_name SettingsScreen
 
 signal closed()
 signal installer_requested()
+signal network_requested()
 
 const MARGIN := Vector2(160, 150)
 const ROW_H := 74.0
@@ -85,6 +86,9 @@ func _build_rows() -> void:
 	_rows = [
 		{"label": "Storage",          "value": "…", "kind": Kind.INFO,
 		 "detail": "Space used by games, captures and the system."},
+		{"label": "Network",          "value": "…", "kind": Kind.ACTION,
+		 "action": "open.network",
+		 "detail": "Connect to Wi-Fi. Without a network Steam cannot sign in and no cover art loads."},
 		{"label": "Controllers",      "value": "…", "kind": Kind.ACTION,
 		 "action": "controller.rescan",
 		 "detail": "Scan for controllers. Pair a DualSense by holding Create + PS."},
@@ -140,22 +144,33 @@ func _refresh_live() -> void:
 		var txt := "%d connected" % int(c.get("count", 0))
 		if b != null:
 			txt += "  ·  %d%%" % int((b as Dictionary).get("pct", 0))
-		_set_value(1, txt))
+		_set_value(2, txt))
+
+	Ipc.request("network.status", {}, func(ok: bool, p: Variant) -> void:
+		if not ok or not _open:
+			return
+		var d: Dictionary = p
+		if d.get("connected", false):
+			_set_value(1, "%s  ·  %s" % [str(d.get("ssid", "")), str(d.get("ip", ""))])
+		elif not d.get("wifi_available", false):
+			_set_value(1, "no adapter")
+		else:
+			_set_value(1, "not connected"))
 
 	Ipc.request("steam.status", {}, func(ok: bool, p: Variant) -> void:
 		if not ok or not _open:
 			return
 		var d: Dictionary = p
 		if not d.get("installed", false):
-			_set_value(2, "not installed")
+			_set_value(3, "not installed")
 			return
 		var libs: Array = d.get("libraries", [])
-		_set_value(2, "%d games  ·  %d librar%s" % [
+		_set_value(3, "%d games  ·  %d librar%s" % [
 			int(d.get("games", 0)), libs.size(),
 			"y" if libs.size() == 1 else "ies"])
 		# The detail line carries the paths, which is what you actually need
 		# when the count is zero and you expected it not to be.
-		if not libs.is_empty() and _index == 2:
+		if not libs.is_empty() and _index == 3:
 			_detail.text = str(libs[0]))
 
 	Ipc.request("system.selftest", {}, func(ok: bool, p: Variant) -> void:
@@ -163,9 +178,9 @@ func _refresh_live() -> void:
 			return
 		var d: Dictionary = p
 		if not d.get("ran", true):
-			_set_value(3, "not run yet")
+			_set_value(4, "not run yet")
 		else:
-			_set_value(3, "%d passed, %d failed" % [
+			_set_value(4, "%d passed, %d failed" % [
 				int(d.get("pass", 0)), int(d.get("fail", 0))]))
 
 func _set_value(i: int, text: String) -> void:
@@ -213,6 +228,8 @@ func _activate() -> void:
 		"toggle.confirm":
 			Router.confirm_is_south = not Router.confirm_is_south
 			_set_value(_index, "Cross" if Router.confirm_is_south else "Circle")
+		"open.network":
+			network_requested.emit()
 		"open.installer":
 			installer_requested.emit()
 		"open.steam":
@@ -226,7 +243,7 @@ func _activate() -> void:
 			Ipc.request("controller.rescan", {}, func(ok: bool, p: Variant) -> void:
 				if ok:
 					var d: Dictionary = p
-					_set_value(1, "%d connected" % int(d.get("count", 0)))
+					_set_value(2, "%d connected" % int(d.get("count", 0)))
 				_detail.text = "Scan complete" if ok else "Scan failed")
 		"library.refresh":
 			_detail.text = "Rescanning…"

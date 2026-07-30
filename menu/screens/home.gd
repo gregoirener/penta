@@ -38,6 +38,7 @@ var _settings: SettingsScreen
 var _store: StoreScreen
 var _profile: ProfileScreen
 var _installer: InstallerScreen
+var _network: NetworkScreen
 
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -87,6 +88,7 @@ func _dev_capture_if_requested() -> void:
 			"store":    _store.open()
 			"profile":  _profile.open(_titles)
 			"install":  _installer.open()
+			"network":  _network.open()
 		await get_tree().create_timer(7.0).timeout
 	for i in 3:
 		await RenderingServer.frame_post_draw
@@ -165,6 +167,7 @@ func _build_overlays() -> void:
 	_settings = SettingsScreen.new()
 	add_child(_settings)
 	_settings.installer_requested.connect(_on_installer_requested)
+	_settings.network_requested.connect(_on_network_requested)
 
 	_store = StoreScreen.new()
 	add_child(_store)
@@ -174,6 +177,9 @@ func _build_overlays() -> void:
 
 	_installer = InstallerScreen.new()
 	add_child(_installer)
+
+	_network = NetworkScreen.new()
+	add_child(_network)
 
 func _build_veil() -> void:
 	# Covers the screen while a title launches, so the handoff to gamescope is
@@ -330,6 +336,10 @@ func _activate_icon() -> void:
 			_settings.open()
 		4:  # Profile
 			_profile.open(_titles)
+
+func _on_network_requested() -> void:
+	await _settings.close()
+	_network.open()
 
 func _on_installer_requested() -> void:
 	await _settings.close()

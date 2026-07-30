@@ -16,6 +16,7 @@ import sys
 
 from .dualsense import ControllerService
 from .installer import Installer, list_targets
+from .network import NetworkService
 from .inputs import InputWatcher
 from .power import PowerManager
 from .server import Server
@@ -55,6 +56,7 @@ async def run(mock: bool) -> None:
     storage = StorageService(mock=mock)
     inputs = InputWatcher(emit, mock=mock)
     installer = Installer(emit, mock=mock)
+    network = NetworkService(emit, mock=mock)
 
     library.refresh()
     controllers.refresh()
@@ -159,6 +161,24 @@ async def run(mock: bool) -> None:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL)
         return {"ok": True, "url": url}
+
+    @server.command("network.status")
+    async def _net_status(_args):
+        return await network.status()
+
+    @server.command("network.scan")
+    async def _net_scan(_args):
+        """Visible Wi-Fi networks, strongest first."""
+        return {"networks": await network.scan()}
+
+    @server.command("network.connect")
+    async def _net_connect(args):
+        return await network.connect(str(args.get("ssid", "")),
+                                     str(args.get("password", "")))
+
+    @server.command("network.forget")
+    async def _net_forget(args):
+        return await network.forget(str(args.get("ssid", "")))
 
     @server.command("install.targets")
     async def _install_targets(_args):
