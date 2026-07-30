@@ -6,6 +6,7 @@ Wants=bluetooth.service
 
 [Service]
 Type=exec
+TimeoutStartSec=600
 ExecStart=/usr/bin/python3 -m pentad
 Environment=PYTHONPATH=/opt/penta/daemon
 Environment=PYTHONUNBUFFERED=1
