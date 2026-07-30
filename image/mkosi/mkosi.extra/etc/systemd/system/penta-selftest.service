@@ -1,6 +1,6 @@
 [Unit]
 Description=PENTA first-boot hardware self-check
-After=multi-user.target bluetooth.service
+After=multi-user.target bluetooth.service penta.target
 Wants=bluetooth.service
 # Only ever runs once; the flag is what makes it a *first*-boot check.
 ConditionPathExists=!/var/lib/penta/selftest.json
@@ -12,10 +12,10 @@ RemainAfterExit=yes
 # This is a oneshot inside penta.target's dependency set, so the target waits
 # for it. Belt and braces on top of the per-probe timeouts: even a total wedge
 # costs 90 seconds once, not a boot.
-TimeoutStartSec=600
+TimeoutStartSec=120
 # A failed probe must never stop the console from reaching its menu.
 SuccessExitStatus=0 1
 ExecStopPost=/bin/sh -c 'test -f /var/lib/penta/selftest.json || echo "{\"ran\":true,\"incomplete\":true}" > /var/lib/penta/selftest.json' 
 
 [Install]
-WantedBy=penta.target
+WantedBy=multi-user.target

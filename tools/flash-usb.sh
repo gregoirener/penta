@@ -43,8 +43,13 @@ diskutil unmountDisk "$DEV"
 
 # The raw device is an order of magnitude faster than the buffered one on
 # macOS, and bs=4m keeps the USB writing in large bursts.
-say "writing (no progress output on macOS — press Ctrl-T for a status line)"
-"${DECOMP[@]}" "$IMG" | dd of="$RDEV" bs=4m
+# conv=sparse skips runs of zeros instead of writing them. The image is 14 GiB
+# but only ~5.5 GiB is real content — the rest is the unallocated tail of the
+# root partition. Writing those zeros costs eight minutes on a USB 2 stick and
+# achieves nothing: btrfs never reads blocks it has not allocated, and the
+# backup GPT at the very end is non-zero so it still gets written.
+say "writing, skipping zero blocks (Ctrl-T for a status line)"
+"${DECOMP[@]}" "$IMG" | dd of="$RDEV" bs=4m conv=sparse
 sync
 
 say "flushing and re-reading the device"

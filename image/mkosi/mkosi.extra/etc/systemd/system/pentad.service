@@ -6,7 +6,6 @@ Wants=bluetooth.service
 
 [Service]
 Type=exec
-TimeoutStartSec=600
 ExecStart=/usr/bin/python3 -m pentad
 Environment=PYTHONPATH=/opt/penta/daemon
 Environment=PYTHONUNBUFFERED=1
@@ -19,8 +18,9 @@ DeviceAllow=char-input rw
 DeviceAllow=char-hidraw rw
 SupplementaryGroups=input
 
-# Everything else stays shut.
-ProtectHome=yes
+# read-only, not yes: pentad reads Steam's manifests out of the penta user's
+# home. ProtectHome=yes hides /home entirely and the library is always empty.
+ProtectHome=read-only
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes

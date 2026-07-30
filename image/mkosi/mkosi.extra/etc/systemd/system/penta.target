@@ -1,15 +1,17 @@
 [Unit]
 Description=PENTA console
 Documentation=https://github.com/gregoirener/penta
-Requires=multi-user.target
+Wants=multi-user.target
 After=multi-user.target
 AllowIsolate=yes
 
+# Wants=, not Requires=, on multi-user: one failed unit anywhere in the system
+# must not stop the console from starting.
+#
 # Declared here, not via [Install] symlinks in penta.target.wants/.
 # `systemctl preset-all` runs during the image build and Arch's default preset
 # is `disable *`, which would remove those symlinks and leave this target empty.
 # A static Wants= is immune to that.
 Wants=pentad.service
 Wants=penta-beacon.service
-Wants=penta-selftest.service
 Wants=greetd.service

@@ -1,46 +1,68 @@
 #!/bin/sh
 # The console session: a compositor owning the display, running the menu and
-# nothing else. No desktop, no window manager, no fallback to a shell.
-set -eu
+# nothing else.
+#
+# Runs as the unprivileged `penta` user, and everything here has to survive
+# that. An earlier version's first action was logging to /var/log, which that
+# user cannot write — with `set -e` the script died on line one and greetd
+# respawned it forever. Nothing in the startup path may be fatal except an
+# actual missing compositor.
+
+set -u          # deliberately not -e: no diagnostic step may kill the session
+
+MENU=/opt/penta/penta-menu
+
+# /var/log/penta is created by tmpfiles.d and owned by penta; /tmp is the
+# fallback if that has not happened yet. Logging must never be the reason the
+# console fails to start, hence every write ends in `|| true`.
+LOG=/var/log/penta/session.log
+mkdir -p /var/log/penta 2>/dev/null || true
+: >> "$LOG" 2>/dev/null || LOG=/tmp/penta-session.log
+
+log() { echo "$(date -Is 2>/dev/null) $*" >> "$LOG" 2>/dev/null || true; }
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export XDG_SESSION_TYPE=wayland
 export __GL_VRR_ALLOWED=1
 
-MENU=/opt/penta/penta-menu
-LOG=/var/log/penta-session.log
+log "session starting as $(id -un) runtime=${XDG_RUNTIME_DIR}"
+
+if [ ! -x "$MENU" ]; then
+        log "FATAL: $MENU is missing or not executable"
+        exit 1
+fi
 
 # Hybrid graphics: the panel is wired to the iGPU, so the compositor runs there
-# and titles are offloaded to the Nvidia GPU per-process (daemon/pentad/
-# session.py). Forcing the compositor onto Nvidia costs a copy every frame.
+# and titles are offloaded to the Nvidia GPU per-process (see
+# daemon/pentad/session.py). Forcing the compositor onto Nvidia would cost a
+# full copy every frame.
 
-log() { echo "$(date -Is) $*" >> "$LOG"; }
-
-try_gamescope() {
-        log "starting gamescope"
-        exec gamescope -f -e --adaptive-sync -r 60 -- "$MENU"
-}
-
-try_cage() {
-        log "gamescope unavailable, falling back to cage"
-        exec cage -d -- "$MENU"
-}
-
-# gamescope on Nvidia is the least battle-tested part of this stack (the Steam
-# Deck is AMD). If it cannot start, a bare kiosk compositor still gets the user
-# to a working menu — losing upscaling and the frame limiter, not the console.
-# Without this, a gamescope failure is an unexplained black screen forever,
-# because greetd would just respawn it in a loop.
+# No `exec` on the first attempt: exec replaces the shell and there is then no
+# way back to try the fallback. `gamescope --help` was also the wrong probe —
+# plenty of tools exit non-zero on --help, which would send us to the fallback
+# on a machine where gamescope works perfectly well.
 if command -v gamescope >/dev/null 2>&1; then
-        if timeout 10 gamescope --help >/dev/null 2>&1; then
-                try_gamescope
-        fi
-        log "gamescope present but not runnable"
+        log "trying gamescope"
+        gamescope -f -e --adaptive-sync -r 60 -- "$MENU" >>"$LOG" 2>&1
+        rc=$?
+        log "gamescope exited with $rc"
+        [ "$rc" -eq 0 ] && exit 0
+else
+        log "gamescope is not installed"
 fi
 
+# gamescope on Nvidia is the least battle-tested part of this stack — the Steam
+# Deck is AMD. A bare kiosk compositor still gets you to a working menu; you
+# lose upscaling and the frame limiter, not the console.
 if command -v cage >/dev/null 2>&1; then
-        try_cage
+        log "falling back to cage"
+        cage -d -- "$MENU" >>"$LOG" 2>&1
+        rc=$?
+        log "cage exited with $rc"
+        [ "$rc" -eq 0 ] && exit 0
+else
+        log "cage is not installed"
 fi
 
-log "no compositor available at all"
+log "no compositor could start the menu"
 exit 1
