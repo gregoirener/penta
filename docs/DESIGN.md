@@ -104,9 +104,11 @@ GRUB. The whole drive is ours, so there is no foreign partition table to respect
 and no shared ESP to corrupt — which is genuinely simpler than the dual-boot
 case, and the one thing this choice makes *easier*.
 
-**Because there is no fallback, buy a USB stick.** A 16 GB stick is the
+**Because there is no fallback, buy a USB stick.** A **32 GB** stick is the
 difference between "reflash and retry" and "the laptop is a brick until I can
-get to a shop". Not required to install — see `INSTALL-NO-USB.md` — but the
+get to a shop". Not 16 GB: the image itself is 14 GiB, which leaves a nominal
+"16 GB" stick (≈14.9 GiB) with nothing for `systemd-repart` to work with, so it
+boots to a console with no data partition and no swap. Not required to install — see `INSTALL-NO-USB.md` — but the
 first time an image doesn't boot, it is the only way back.
 
 Why `systemd-boot` over GRUB: it reads the ESP directly, needs no `grub-install`
@@ -312,12 +314,19 @@ dominant-colour gradient + typeset name. Never show a broken image.
 
 Partition layout on the internal NVMe (whole disk):
 
-| # | Size | FS | Label | Purpose |
-|---|---|---|---|---|
-| 1 | 1 GiB | FAT32 | `PENTA_ESP` | ESP: systemd-boot + UKIs |
-| 2 | 64 GiB | btrfs | `PENTA_SYS` | OS image (ostree), `@`, `@var` |
-| 3 | rest of disk | btrfs | `PENTA_DATA` | `games`, `art`, `captures` subvolumes |
-| 4 | 20 GiB | swap | `PENTA_SWAP` | hibernation target for Rest Mode |
+| # | Size | FS | Label | Purpose | Created |
+|---|---|---|---|---|---|
+| 1 | 2 GiB | FAT32 | `PENTA_ESP` | ESP: systemd-boot + UKI, plus the removable-media fallback copy | in the image |
+| 2 | 12 GiB | btrfs | `PENTA_SYS` | the OS | in the image |
+| 3 | ≤ 20 GiB | swap | `PENTA_SWAP` | hibernation target for Rest Mode | first boot |
+| 4 | rest of disk | btrfs | `PENTA_DATA` | `games`, `art`, `captures` subvolumes | first boot |
+
+**Swap is partition 3 and data is partition 4, in that order, and it matters.**
+`systemd-repart` appends partitions in the filename order of
+`/usr/lib/repart.d/` and never moves one. With swap last, the data partition is
+walled in by it and can never be grown again — so a stick cloned onto a 1 TB
+NVMe leaves the rest of the drive unallocated forever. Data last means data
+grows, on this disk and on every disk it is cloned to.
 
 Rationale:
 
@@ -336,8 +345,16 @@ Rationale:
   game. This is a genuinely achievable console feature that most PC "big picture
   modes" don't have.
 
-The image we flash is only ~24 GiB; partition 3 is created and grown on **first
-boot** by a `penta-firstboot.service`. That keeps the streamed download small.
+The image we flash is only ~14 GiB (partitions 1 and 2); swap and data are
+created on **first boot** by stock `systemd-repart`, with no firstboot service
+of our own. That keeps the streamed download small.
+
+`penta-mount-data.service` then mounts them. It has to exist because repart runs
+during `sysinit.target`, which is *after* `local-fs.target` has already skipped
+every `nofail` line in `/etc/fstab` — so on the one boot where those partitions
+first appear, nothing would otherwise mount them. It also moves Steam's library
+to `/games/steam`: Steam's default is `~/.local/share/Steam`, which is on the
+12 GiB root, and one modern title fills it while the data partition sits empty.
 
 **On internal NVMe this gets simpler.** The USB-bridge worries that shaped the
 original design — UAS quirks, enclosures dropping off the bus across

@@ -205,9 +205,20 @@ Remove nothing, just let it boot. On the first start `systemd-repart` grows the
 data partition to fill the drive and creates swap, which adds ~30 seconds. Then
 the PENTA menu.
 
-If you get a black screen instead, the first-boot self-check writes its results
-to `/var/log/penta-selftest.log` — reboot and hold **Escape** during boot to
-reach a console.
+If you get a black screen instead, press **Ctrl+Alt+F2**. There is a getty on
+VT2 for exactly this (log in as `root`, password `penta`), because greetd owns
+VT1 and `NAutoVTs=0` means nothing else will ever give you a prompt. From there:
+
+```
+systemctl status greetd pentad penta-mount-data
+cat /var/log/penta/session.log      # why the compositor did not start
+cat /var/log/penta-selftest.log     # the first-boot hardware probe
+journalctl -b -p warning
+```
+
+`penta-beacon` also prints a one-line summary to the console on every boot —
+boot target, which services are up, whether `/games` mounted, and the last line
+of the session log.
 
 ---
 
@@ -221,8 +232,10 @@ on C:\ and a boot entry.
 
 The drive has PENTA on it, whether or not PENTA boots. You need external media
 to recover — which is the argument for buying a USB stick tomorrow *before*
-doing step 6, not after. A €8 16 GB stick turns every failure in this document
-from "bricked until I buy a stick" into "reflash and try again".
+doing step 6, not after. A 32 GB stick turns every failure in this document
+from "bricked until I buy a stick" into "reflash and try again". 32, not 16:
+the image is 14 GiB and a nominal 16 GB stick has ≈14.9 GiB, which leaves
+`systemd-repart` nothing to make the data and swap partitions out of.
 
 ---
 
