@@ -5,6 +5,54 @@
 > laptop's NVMe from a RAM-booted live system. This page is for writing PENTA
 > to a USB SSD from the Mac.
 
+## Which of the three routes you want
+
+| | Stick needed | Use it when |
+|---|---|---|
+| **Installer** (below) | any, 8 GB+ | you want PENTA on the laptop's internal NVMe |
+| **Direct image** (rest of this page) | 32 GB+ | you want to *run* PENTA off a USB SSD |
+| [**No USB at all**](INSTALL-NO-USB.md) | none | you have no removable media |
+
+The two are different jobs and the size rule is different for each. Writing the
+console image straight to a stick means the stick *is* the console, so it has
+to hold the whole 14 GiB OS plus room for `systemd-repart` to add swap and a
+data partition — hence 32 GB. Using a stick to get PENTA onto an internal disk
+makes it a courier, and a courier only carries the ~2 GB compressed file.
+
+---
+
+## The installer
+
+A separate ~400 MB bootable image ([`image/installer/`](../image/installer))
+that writes the console image onto an internal disk. It is not PENTA and does
+not contain PENTA — the console image rides along beside it on the stick.
+
+**1. Flash the installer** to any stick, 8 GB or larger:
+
+```bash
+sudo ./tools/flash-usb.sh penta-installer-*.img.xz diskN
+```
+
+**2. Copy the console image onto it.** A volume named `PENTA_PAYLOAD` appears
+in Finder. Drag `penta-<sha>.img.xz` onto it and eject. That is the entire
+manual step — no `dd`, no partition arithmetic.
+
+**3. Boot the stick** (F12 on an Acer). The installer lists every disk, refuses
+its own stick and anything under 24 GB, shows you what is currently on the
+target, and makes you type out `ERASE NVME0N1` before it writes anything.
+
+Why the two files stay separate: the console image is ~2 GB and GitHub rejects
+release assets over 2 GiB, so an installer with it baked in could not be
+published at all. It also means a new console image needs no new installer —
+drop the new file on the same stick.
+
+Build one with the **build installer** workflow (manual trigger; it is not run
+on every push).
+
+---
+
+## Writing the console image directly to a USB SSD
+
 ## The constraint that shapes this
 
 Your Mac has **8.2 GB free**. A PENTA image is ~25 GB raw / ~0.5 GB compressed.

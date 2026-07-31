@@ -1,0 +1,19 @@
+[Unit]
+Description=PENTA installer
+Wants=multi-user.target
+After=multi-user.target
+AllowIsolate=yes
+
+# Static Wants=, not [Install] symlinks. `systemctl preset-all` runs during the
+# image build against Arch's `disable *` preset and deletes every enablement
+# symlink under /etc — which is how the console image spent three builds
+# booting to a bare Arch system with nothing started. Nothing can strip these.
+Wants=penta-install.service
+
+# The escape hatch. If the installer service dies, this is the only way to get
+# a prompt and find out why.
+Wants=getty@tty2.service
+
+# Reached because /etc/systemd/system/default.target is a symlink to this. If
+# that symlink does not survive the build, the machine boots graphical.target
+# and you get a login prompt instead of an installer. The build asserts it.

@@ -1,0 +1,173 @@
+name: build installer
+
+# Manual only, on purpose.
+#
+# The installer changes far less often than the console image, and building it
+# on every push would double the CI spend for an artifact nobody re-downloaded.
+# Run it when the installer itself changes, or when you want a fresh one.
+#
+# It does NOT need the console image: the payload is copied onto the stick
+# afterwards, which is the whole reason this image is ~400 MB instead of 2.5 GB
+# (and therefore publishable at all — GitHub rejects release assets over 2 GiB).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'image/installer/**'
+      - '.github/workflows/installer.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build installer image
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free up disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h /
+
+      - name: Build
+        run: |
+          mkdir -p out
+          docker run --rm --privileged \
+            --security-opt seccomp=unconfined \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -v /dev:/dev \
+            -w /work/image/installer \
+            archlinux:latest bash -euxo pipefail -c '
+              pacman -Sy --noconfirm --needed \
+                mkosi systemd-ukify btrfs-progs dosfstools e2fsprogs \
+                zstd xz cpio mtools arch-install-scripts squashfs-tools \
+                erofs-utils git python gnupg
+              mkosi --output-dir /work/out --debug build
+
+              loop=$(losetup -fP --show /work/out/penta-installer.raw)
+              mkdir -p /mnt/esp /mnt/root /mnt/payload
+
+              # Firmware only probes the removable-media path on a freshly
+              # written stick, because a dd-ed disk has no NVRAM entry. Without
+              # this the installer drops to a UEFI shell.
+              mount "${loop}p1" /mnt/esp
+              if [ ! -f /mnt/esp/EFI/BOOT/BOOTX64.EFI ]; then
+                mkdir -p /mnt/esp/EFI/BOOT
+                src=$(find /mnt/esp/EFI -iname "systemd-boot*.efi" | head -1)
+                if [ -n "$src" ]; then
+                  cp "$src" /mnt/esp/EFI/BOOT/BOOTX64.EFI
+                else
+                  src=$(find /mnt/esp/EFI/Linux -iname "*.efi" | head -1)
+                  test -n "$src" || { echo "nothing bootable on the ESP"; exit 1; }
+                  mv "$src" /mnt/esp/EFI/BOOT/BOOTX64.EFI
+                fi
+              fi
+              test -f /mnt/esp/EFI/BOOT/BOOTX64.EFI
+              df -h /mnt/esp
+              umount /mnt/esp
+
+              # The installer is a text UI on a machine with nothing else on
+              # it, so every one of these being present is load-bearing.
+              mount -o ro "${loop}p2" /mnt/root
+              for f in /usr/lib/systemd/systemd /usr/bin/penta-install \
+                       /usr/bin/xz /usr/bin/sgdisk /usr/bin/efibootmgr \
+                       /usr/bin/lsblk /usr/bin/dd \
+                       /etc/systemd/system/penta-install.service \
+                       /usr/lib/penta/build-info; do
+                test -e "/mnt/root$f" || { echo "MISSING: $f"; exit 1; }
+                echo "  ok  $f"
+              done
+
+              # Boots to an installer, or boots to a login prompt with no hint
+              # that an installer was ever meant to appear. Assert it.
+              want=$(readlink /mnt/root/etc/systemd/system/default.target || echo "")
+              case "$want" in
+                *penta-installer.target) echo "  ok  default.target -> $want" ;;
+                *) echo "FAIL: default.target is '"'"'$want'"'"'"; exit 1 ;;
+              esac
+              umount /mnt/root
+
+              # The payload partition has to be FAT32 and it has to be
+              # writable from macOS and Windows, or the one manual step in the
+              # whole procedure does not work.
+              mount "${loop}p3" /mnt/payload
+              echo "PENTA_PAYLOAD volume:"
+              df -h /mnt/payload
+              # printf, not a heredoc: a heredoc body has to start at column 0,
+              # which ends the YAML block scalar this whole script lives in.
+              {
+                echo "Copy the PENTA console image onto this volume, then boot this stick."
+                echo
+                echo "    penta-<sha>.img.xz    from the repository releases, about 2 GB"
+                echo
+                echo "Nothing else is needed. The installer picks up any file here named"
+                echo "penta*.img.xz (or .img.zst, or .img) and writes it to the disk you choose."
+              } > /mnt/payload/PUT-PENTA-IMAGE-HERE.txt
+              cat /mnt/payload/PUT-PENTA-IMAGE-HERE.txt
+              umount /mnt/payload
+
+              sync
+              losetup -d "$loop"
+            '
+          sudo chown -R "$(id -u):$(id -g)" out
+          ls -lh out/
+
+      - name: Compress
+        run: |
+          set -euo pipefail
+          test -f out/penta-installer.raw || { ls -R out; exit 1; }
+          TAG="installer-${GITHUB_RUN_NUMBER}"
+          IMG="penta-installer-${GITHUB_SHA::7}.img.xz"
+          # The 6 GiB payload partition is all zeros, so this compresses to
+          # almost nothing — which is the trick that keeps the artifact small.
+          xz -3 -T0 -c out/penta-installer.raw > "out/$IMG"
+          rm -f out/penta-installer.raw
+          ls -lh "out/$IMG"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "IMG=$IMG" >> "$GITHUB_ENV"
+          size=$(stat -c%s "out/$IMG")
+          test "$size" -lt 2147483648 \
+            || { echo "asset too large for a release: $size bytes"; exit 1; }
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: PENTA installer ${{ env.TAG }}
+          files: out/${{ env.IMG }}
+          body: |
+            The PENTA installer — a small bootable image that writes PENTA onto
+            an internal disk. It is not PENTA and it does not contain PENTA.
+
+            **1. Flash this to any USB stick, 8 GB or larger**
+
+            ```
+            sudo ./tools/flash-usb.sh penta-installer-*.img.xz diskN
+            ```
+
+            or Etcher / Rufus / balena — it is an ordinary disk image.
+
+            **2. Copy the console image onto it**
+
+            A volume named `PENTA_PAYLOAD` appears when you plug the stick in —
+            in Finder, in Explorer, anywhere. Drop `penta-<sha>.img.xz` from the
+            [console image releases](../../releases) onto it. Eject.
+
+            **3. Boot the stick and pick a disk**
+
+            F12 on an Acer. The installer lists every disk, refuses its own
+            stick and anything under 24 GB, and asks you to type out the name of
+            the one you are erasing.
+
+            ---
+
+            Why the two files are separate: the console image is ~2 GB and
+            GitHub rejects release assets over 2 GiB, so an installer carrying
+            it could not be published at all. Keeping them apart also means a
+            new console image does not need a new installer.

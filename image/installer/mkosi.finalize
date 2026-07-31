@@ -1,0 +1,41 @@
+#!/bin/sh
+# Put the enablement back, after everything else has had its turn.
+#
+# Same lesson as image/mkosi/mkosi.finalize, and it cost three builds to learn
+# there: `systemctl preset-all` runs during the build, Arch's preset is
+# `disable *`, and `systemctl disable` removes every symlink pointing at a unit
+# — alias symlinks like default.target included, [Install] section or not.
+#
+# For an installer the consequence is particularly bleak: the image boots
+# perfectly, lands on a login prompt, and the person in front of it has no way
+# to know an installer was ever supposed to appear.
+
+set -eu
+
+ROOT="${BUILDROOT:-${DESTDIR:-}}"
+if [ -z "$ROOT" ] || [ ! -d "$ROOT" ]; then
+        echo "mkosi.finalize: no BUILDROOT to work on (got '${ROOT}')" >&2
+        exit 1
+fi
+
+echo "mkosi.finalize: wiring the installer in $ROOT"
+
+ln -sfn penta-installer.target "$ROOT/etc/systemd/system/default.target"
+echo "  default.target -> penta-installer.target"
+
+dir="$ROOT/etc/systemd/system/penta-installer.target.wants"
+mkdir -p "$dir"
+ln -sfn /etc/systemd/system/penta-install.service "$dir/penta-install.service"
+ln -sfn /usr/lib/systemd/system/getty@.service "$dir/getty@tty2.service"
+echo "  enabled  penta-install.service, getty@tty2.service"
+
+# A marker, so the build can tell "wired correctly because this ran" from
+# "wired correctly by luck". Those look identical from outside.
+mkdir -p "$ROOT/usr/lib/penta"
+date -u +"installer finalize ran %Y-%m-%dT%H:%M:%SZ" > "$ROOT/usr/lib/penta/build-info"
+
+echo "mkosi.finalize: /etc/systemd/system as shipped"
+ls -l "$ROOT/etc/systemd/system" | sed 's/^/    /'
+
+test -L "$ROOT/etc/systemd/system/default.target" \
+        || { echo "mkosi.finalize: default.target did not survive" >&2; exit 1; }

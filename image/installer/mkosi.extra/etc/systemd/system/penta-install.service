@@ -1,0 +1,44 @@
+[Unit]
+Description=PENTA installer
+After=multi-user.target
+# Owns VT1 outright; nothing else may draw on the screen the user is reading.
+Conflicts=getty@tty1.service
+After=getty@tty1.service
+
+# Never give up. The default rate limit (5 starts in 10s) would put the
+# installer permanently into failed state after a few quick exits, leaving a
+# blank screen and no way forward on a machine with nothing else on it.
+# Belongs in [Unit] — systemd ignores it in [Service] and warns.
+StartLimitIntervalSec=0
+
+[Service]
+# Type=idle rather than simple: it waits for other jobs to finish printing, so
+# the installer's first screen is not immediately scrolled off by systemd
+# status lines. On a one-screen text UI that difference is the whole first
+# impression.
+Type=idle
+ExecStart=/usr/bin/penta-install
+
+# It is an interactive program on a physical console, so it needs a real
+# terminal on both ends. Without tty-force systemd hands it a pipe, `read`
+# returns EOF immediately, and the installer falls straight through every
+# prompt to its shell fallback — which looks exactly like a crash.
+StandardInput=tty-force
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+
+# No timeout: the person in front of it is reading a warning about erasing
+# their disk, and there is no correct number of seconds to allow for that.
+TimeoutStartSec=infinity
+
+# If it exits — the user quit to a shell, or it died — put it back. There is
+# nothing else on this machine to fall back to.
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=penta-installer.target

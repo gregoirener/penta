@@ -1,0 +1,346 @@
+#!/bin/bash
+# PENTA installer.
+#
+# Writes penta-<sha>.img.xz from the stick's PENTA_PAYLOAD partition onto an
+# internal disk, then makes the firmware boot it.
+#
+# Everything here is destructive, so it refuses far more than it accepts: never
+# the disk it booted from, never a partition, never without a confirmation the
+# user typed out in full naming the target. The guards are the part worth
+# getting right — a wrong answer here erases somebody's Windows install.
+#
+# A text UI, deliberately. An installer that needs a GPU driver to draw itself
+# cannot install the OS whose GPU driver is the risky part.
+
+set -uo pipefail
+
+PAYLOAD_LABEL=PENTA_PAYLOAD
+PAYLOAD_MNT=/run/penta-payload
+LOG=/run/penta-install.log
+
+# 24 GiB: 2 GiB ESP + 12 GiB root, then systemd-repart wants room for swap and
+# a data partition on top. Below this the install technically fits and the
+# console has nowhere to put a game.
+MIN_TARGET=$((24 * 1024 * 1024 * 1024))
+
+bold=$'\033[1m'; dim=$'\033[2m'; red=$'\033[31m'; grn=$'\033[32m'
+ylw=$'\033[33m'; cyn=$'\033[36m'; rst=$'\033[0m'
+
+log()  { printf '%s\n' "$*" >> "$LOG" 2>/dev/null || true; }
+say()  { printf '%s\n' "$*"; log "$*"; }
+warn() { printf '%s%s%s\n' "$ylw" "$*" "$rst"; log "WARN $*"; }
+die()  { printf '\n%serror:%s %s\n' "$red" "$rst" "$*"; log "FATAL $*"; hold; exit 1; }
+
+hold() {
+        printf '\n%sPress Enter for a shell.%s ' "$dim" "$rst"
+        read -r _ || true
+        exec /bin/bash -l
+}
+
+banner() {
+        clear 2>/dev/null || true
+        cat <<'EOF'
+
+    ██████  ███████ ███    ██ ████████  █████
+    ██   ██ ██      ████   ██    ██    ██   ██
+    ██████  █████   ██ ██  ██    ██    ███████
+    ██      ██      ██  ██ ██    ██    ██   ██
+    ██      ███████ ██   ████    ██    ██   ██
+
+EOF
+        printf '    %sinstaller%s\n\n' "$dim" "$rst"
+}
+
+# --- Which device are we running from? ----------------------------------------
+# Never offer it as a target. Resolved from the payload partition rather than
+# from /, because the root here is an erofs image that may already be detached.
+boot_disk() {
+        local src part
+        src=$(findmnt -n -o SOURCE "$PAYLOAD_MNT" 2>/dev/null)
+        [ -z "$src" ] && src=$(findmnt -n -o SOURCE / 2>/dev/null)
+        [ -z "$src" ] && return 1
+        part=${src%%[*}
+        lsblk -no PKNAME "$part" 2>/dev/null | head -1 | sed 's|^|/dev/|'
+}
+
+# --- Find the payload ---------------------------------------------------------
+find_payload() {
+        local dev
+        mkdir -p "$PAYLOAD_MNT"
+
+        if ! findmnt -n "$PAYLOAD_MNT" >/dev/null 2>&1; then
+                # udev may not have caught up with a stick that enumerated late.
+                udevadm settle --timeout=20 >/dev/null 2>&1 || true
+                dev=$(blkid -L "$PAYLOAD_LABEL" 2>/dev/null)
+                [ -z "$dev" ] && return 1
+                mount -o ro "$dev" "$PAYLOAD_MNT" 2>/dev/null || return 1
+        fi
+
+        # First match wins, newest first, so re-copying a newer image without
+        # deleting the old one does the expected thing.
+        find "$PAYLOAD_MNT" -maxdepth 2 -iname 'penta*.img.xz' -o \
+             -maxdepth 2 -iname 'penta*.img.zst' -o \
+             -maxdepth 2 -iname 'penta*.img' 2>/dev/null \
+                | sort -r | head -1
+}
+
+decompressor() {
+        case "$1" in
+                *.xz)  echo "xz -dc"   ;;
+                *.zst) echo "zstd -dc" ;;
+                *)     echo "cat"      ;;
+        esac
+}
+
+# --- Target selection ---------------------------------------------------------
+declare -a DEV=() SIZE=() MODEL=() NOTE=()
+
+scan_disks() {
+        local boot name sz rm type path model note
+        boot=$(boot_disk)
+        DEV=(); SIZE=(); MODEL=(); NOTE=()
+
+        # NAME/SIZE/RM/TYPE only — every one of them is a single token, so
+        # plain whitespace splitting is safe. MODEL is fetched per-device
+        # afterwards precisely because it contains spaces ("Samsung SSD 970"),
+        # which is what makes parsing a combined lsblk line a trap.
+        while read -r name sz rm type; do
+                [ "$type" = "disk" ] || continue
+                # Loop, ram, zram and optical devices are not install targets.
+                case "$name" in loop*|ram*|zram*|sr*|fd*) continue ;; esac
+                case "${sz:-}" in ''|*[!0-9]*) continue ;; esac
+
+                path="/dev/$name"
+                model=$(lsblk -dno MODEL "$path" 2>/dev/null \
+                        | sed -e 's/[[:space:]]\+/ /g' -e 's/^ //' -e 's/ $//')
+
+                note=""
+                if [ "$path" = "$boot" ]; then
+                        note="this is the stick the installer is running from"
+                elif [ "$sz" -lt "$MIN_TARGET" ]; then
+                        note="too small — needs 24 GB or more"
+                elif [ "$rm" = "1" ]; then
+                        note="removable"
+                fi
+
+                DEV+=("$path"); SIZE+=("$sz")
+                MODEL+=("${model:-unknown}"); NOTE+=("$note")
+        done < <(lsblk -dn -b -o NAME,SIZE,RM,TYPE 2>/dev/null)
+}
+
+gb() { echo $(( ${1:-0} / 1000000000 )); }
+
+# --- The write ----------------------------------------------------------------
+write_image() {
+        local img="$1" target="$2" decomp
+        decomp=$(decompressor "$img")
+
+        say ""
+        say "${cyn}==>${rst} writing $(basename "$img") to $target"
+        say "${dim}    this takes a few minutes and must not be interrupted${rst}"
+        say ""
+
+        # oflag=direct bypasses the page cache: with 4 GB of RAM and a 14 GiB
+        # write, buffering means the progress bar races to 100% and then the
+        # machine sits still for minutes flushing. Direct is honest.
+        if ! $decomp "$img" | dd of="$target" bs=8M status=progress \
+                                  oflag=direct conv=fsync; then
+                die "the write failed — $target is now in an unknown state and
+       must be reinstalled before it will boot anything"
+        fi
+        sync
+
+        # The image's partition table says the disk ends where the image ends.
+        # On a larger target the backup GPT header is then in the wrong place,
+        # the table reads as corrupt, and systemd-repart refuses to grow the
+        # data partition on first boot — so the console comes up with a 30 GB
+        # library on a 1 TB drive.
+        say ""
+        say "${cyn}==>${rst} repairing the partition table"
+        if command -v sgdisk >/dev/null 2>&1; then
+                sgdisk -e "$target" >/dev/null 2>&1 \
+                        || warn "sgdisk could not move the backup GPT header"
+        else
+                warn "sgdisk is missing; the data partition may not grow"
+        fi
+        partprobe "$target" 2>/dev/null || true
+        udevadm settle --timeout=20 >/dev/null 2>&1 || true
+}
+
+# --- Make the firmware boot it ------------------------------------------------
+register_boot_entry() {
+        local target="$1" espnum esp
+
+        if [ ! -d /sys/firmware/efi ]; then
+                warn "not booted via UEFI — skipping the firmware boot entry"
+                return
+        fi
+        if ! command -v efibootmgr >/dev/null 2>&1; then
+                warn "efibootmgr is missing — relying on the removable-media path"
+                return
+        fi
+
+        # The written image carries EFI/BOOT/BOOTX64.EFI, which most firmware
+        # boots as removable media. That is a fallback, not a guarantee, and
+        # the machine may still have a stale entry ahead of it pointing at the
+        # OS we just erased.
+        esp=$(lsblk -no NAME,PARTTYPE "$target" 2>/dev/null \
+              | awk 'tolower($2)=="c12a7328-f81f-11d2-ba4b-00a0c93ec93b"{print $1; exit}')
+        espnum=$(printf '%s' "$esp" | grep -oE '[0-9]+$')
+        if [ -z "$espnum" ]; then
+                warn "no EFI System Partition found on $target — skipping"
+                return
+        fi
+
+        say "${cyn}==>${rst} registering PENTA with the firmware (partition $espnum)"
+
+        # Drop old PENTA entries so reinstalling does not accumulate duplicates.
+        efibootmgr 2>/dev/null | grep -E '^Boot[0-9A-Fa-f]{4}.*PENTA' \
+                | cut -c5-8 | while read -r n; do
+                        efibootmgr -B -b "$n" >/dev/null 2>&1 || true
+                done
+
+        efibootmgr --create --disk "$target" --part "$espnum" \
+                   --label PENTA --loader '\EFI\BOOT\BOOTX64.EFI' \
+                   >/dev/null 2>&1 \
+                || warn "could not create the boot entry — use the F12 boot menu"
+}
+
+# --- Main ---------------------------------------------------------------------
+main() {
+        banner
+        [ "$(id -u)" = "0" ] || die "the installer must run as root"
+
+        say "${cyn}==>${rst} looking for a PENTA image on the stick"
+        local img
+        img=$(find_payload)
+        if [ -z "$img" ] || [ ! -f "$img" ]; then
+                cat <<EOF
+
+  ${red}No PENTA image found.${rst}
+
+  This installer carries no operating system of its own. You need to put one
+  on the stick first:
+
+    1. Download ${bold}penta-<sha>.img.xz${rst} from the repository's releases
+    2. Plug this stick into any computer — a volume named ${bold}${PAYLOAD_LABEL}${rst}
+       appears in Finder or Explorer
+    3. Copy the .img.xz file onto it, eject, and boot this again
+
+EOF
+                hold
+        fi
+
+        local imgsize
+        imgsize=$(stat -c%s "$img" 2>/dev/null || echo 0)
+        say "    found $(basename "$img") ($(( imgsize / 1000000 )) MB)"
+
+        # --- Pick a disk ------------------------------------------------------
+        scan_disks
+        [ "${#DEV[@]}" -gt 0 ] || die "no disks found at all — is the NVMe visible in BIOS?"
+
+        say ""
+        say "${bold}Install PENTA to which disk?${rst}"
+        say ""
+        local i
+        for i in "${!DEV[@]}"; do
+                if [ -n "${NOTE[$i]}" ] && [ "${NOTE[$i]}" != "removable" ]; then
+                        printf '  %s%d)%s %-14s %5s GB  %-24s %s(%s)%s\n' \
+                               "$dim" "$((i+1))" "$rst" "${DEV[$i]}" \
+                               "$(gb "${SIZE[$i]}")" "${MODEL[$i]}" \
+                               "$dim" "${NOTE[$i]}" "$rst"
+                else
+                        printf '  %s%d)%s %-14s %5s GB  %-24s %s\n' \
+                               "$bold" "$((i+1))" "$rst" "${DEV[$i]}" \
+                               "$(gb "${SIZE[$i]}")" "${MODEL[$i]}" "${NOTE[$i]}"
+                fi
+        done
+        say ""
+
+        local choice idx target
+        while true; do
+                printf '  number, or q to quit: '
+                read -r choice || hold
+                [ "$choice" = "q" ] && { say "nothing was changed."; hold; }
+                case "$choice" in
+                        ''|*[!0-9]*) warn "  that is not a number"; continue ;;
+                esac
+                idx=$((choice - 1))
+                [ "$idx" -ge 0 ] 2>/dev/null && [ "$idx" -lt "${#DEV[@]}" ] \
+                        || { warn "  no such disk"; continue; }
+
+                case "${NOTE[$idx]}" in
+                        "this is the stick"*)
+                                warn "  that is the installer's own stick. Pick another."
+                                continue ;;
+                        "too small"*)
+                                warn "  ${DEV[$idx]} is too small for PENTA."
+                                continue ;;
+                esac
+                target="${DEV[$idx]}"
+                break
+        done
+
+        # --- Confirm ----------------------------------------------------------
+        local token
+        token="ERASE $(basename "$target" | tr '[:lower:]' '[:upper:]')"
+
+        say ""
+        printf '%s' "$red"
+        cat <<EOF
+  ────────────────────────────────────────────────────────────────
+   This ERASES $target completely — $(gb "${SIZE[$idx]}") GB, ${MODEL[$idx]}.
+   Every partition, every operating system and every file on it.
+   There is no undo and no recovery partition afterwards.
+  ────────────────────────────────────────────────────────────────
+EOF
+        printf '%s' "$rst"
+
+        # What is on there now, so a wrong disk is obvious before it is gone.
+        say ""
+        say "${dim}  currently on $target:${rst}"
+        lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT "$target" 2>/dev/null \
+                | sed 's/^/    /' || true
+
+        say ""
+        say "  Type ${bold}${token}${rst} to continue, anything else to cancel."
+        printf '  > '
+        read -r answer || hold
+        if [ "$(printf '%s' "${answer:-}" | tr '[:lower:]' '[:upper:]')" != "$token" ]; then
+                say ""
+                say "${grn}Cancelled. Nothing was written.${rst}"
+                hold
+        fi
+
+        # Refuse to write to something that is mounted: the write would be
+        # corrupted and the machine can hang mid-flash.
+        if findmnt -n -S "$target" >/dev/null 2>&1 \
+           || lsblk -no MOUNTPOINT "$target" 2>/dev/null | grep -q .; then
+                umount "$target"* 2>/dev/null || true
+                if lsblk -no MOUNTPOINT "$target" 2>/dev/null | grep -q .; then
+                        die "$target still has mounted partitions"
+                fi
+        fi
+
+        write_image "$img" "$target"
+        register_boot_entry "$target"
+
+        say ""
+        say "${grn}  Done.${rst} PENTA is on $target."
+        say ""
+        say "  Remove the stick and reboot. The first boot takes about a minute"
+        say "  longer than usual: systemd-repart creates the swap and data"
+        say "  partitions to fill the drive, and the menu starts after that."
+        say ""
+        say "  If you get a black screen, press Ctrl+Alt+F2 for a prompt"
+        say "  (root / penta) and read /var/log/penta/session.log."
+        say ""
+        printf '  Reboot now? [Y/n] '
+        read -r r || true
+        case "${r:-y}" in
+                [Nn]*) hold ;;
+                *) sync; systemctl reboot ;;
+        esac
+}
+
+main "$@"

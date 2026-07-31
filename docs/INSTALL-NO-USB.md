@@ -1,5 +1,23 @@
 # Installing PENTA with no USB media
 
+> **Read this first if you have a stick of any size.**
+>
+> The "32 GB minimum" quoted elsewhere is for *running PENTA off a stick*. If
+> you are only using the stick to get PENTA onto the internal disk, it is a
+> courier and only has to hold the ~2 GB compressed image. **A 16 GB stick — or
+> an 8 GB one — is plenty.** Two easier routes than this document:
+>
+> * **The PENTA installer.** A ~400 MB bootable image with an empty
+>   `PENTA_PAYLOAD` volume on it. Flash it, drag `penta-<sha>.img.xz` onto the
+>   volume that appears in Finder, boot it, pick the disk. See
+>   [FLASHING.md](FLASHING.md).
+> * **Ventoy + an Arch ISO.** Put Ventoy on the stick, drop `archlinux.iso` and
+>   `penta-<sha>.img.xz` on it, boot the ISO, then
+>   `xz -dc /path/penta.img.xz | dd of=/dev/nvme0n1 bs=8M status=progress`.
+>   The stick is not the target, so none of the `copytoram` care below applies.
+>
+> What follows is for the case where you have **no removable media at all**.
+
 You have no USB stick, and the target machine's only drive is the one we want to
 overwrite. That looks circular, and it isn't: **the machine already has a
 working OS and a bootloader we can add to.**

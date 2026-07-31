@@ -14,7 +14,10 @@ on:
   push:
     branches: [main]
     paths:
-      - 'image/**'
+      # image/mkosi/**, not image/**: the installer lives at image/installer/
+      # and has its own workflow. Matching the whole directory meant an
+      # installer-only change rebuilt the 35-minute console image for nothing.
+      - 'image/mkosi/**'
       - 'daemon/**'
       - 'menu/**'
       - '.github/workflows/image.yml'
