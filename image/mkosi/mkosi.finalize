@@ -62,14 +62,16 @@ want penta.target.wants /usr/lib/systemd/system/greetd.service
 want penta.target.wants /usr/lib/systemd/system/getty@.service getty@tty2.service
 
 # --- Distribution units the console cannot work without -----------------------
-want multi-user.target.wants /usr/lib/systemd/system/NetworkManager.service
-want multi-user.target.wants /usr/lib/systemd/system/bluetooth.service
-want multi-user.target.wants /usr/lib/systemd/system/sshd.service
-want multi-user.target.wants /usr/lib/systemd/system/systemd-timesyncd.service
-
-# Grows the disk on first boot. Without it there is no /games and no swap, and
-# the fstab entries fail against labels that will never exist.
-want sysinit.target.wants /usr/lib/systemd/system/systemd-repart.service
+# These used to be written here too, and preset-all removed them again after
+# this hook had run — the ordering is mkosi's, not ours, and it is not
+# something to build on. They are now pulled in by drop-ins that live under
+# /usr/lib and have no symlink to delete:
+#
+#   /usr/lib/systemd/system/multi-user.target.d/10-penta.conf
+#   /usr/lib/systemd/system/sysinit.target.d/10-penta.conf
+#
+# Nothing to do here for them. Left as a note so the next person does not
+# helpfully add the symlinks back.
 
 # --- Prove it ------------------------------------------------------------------
 # A marker, so the build can tell "this hook ran and the wiring is right" from

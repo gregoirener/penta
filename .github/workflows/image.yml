@@ -182,16 +182,29 @@ jobs:
                 *) echo "FAIL: default.target is '$want', not penta.target"; exit 1 ;;
               esac
 
-              # Fatal for the first three: no network means no Steam and no
-              # cover art, and no repart means no /games and no swap, which is
-              # where the fstab timeouts came from. penta.target's static
-              # Wants= covers greetd and pentad either way.
-              for u in multi-user.target.wants/NetworkManager.service \
-                       sysinit.target.wants/systemd-repart.service \
-                       penta.target.wants/greetd.service \
-                       penta.target.wants/pentad.service; do
-                test -L "/mnt/root/etc/systemd/system/$u" \
-                  || { echo "FAIL: not enabled: $u"; exit 1; }
+              # Enablement is drop-ins under /usr/lib, NOT .wants/ symlinks
+              # under /etc. `systemctl preset-all` deletes the latter and
+              # cannot touch the former, and two builds in a row proved which
+              # of those matters. Assert the mechanism that actually holds.
+              echo "--- pulled in by drop-in ---"
+              for f in multi-user.target.d/10-penta.conf \
+                       sysinit.target.d/10-penta.conf; do
+                test -f "/mnt/root/usr/lib/systemd/system/$f" \
+                  || { echo "FAIL: missing drop-in: $f"; exit 1; }
+                echo "  ok  $f"
+              done
+              grep -q "Wants=greetd.service" /mnt/root/etc/systemd/system/penta.target \
+                || { echo "FAIL: penta.target does not want greetd"; exit 1; }
+              echo "  ok  penta.target Wants= greetd, pentad, beacon, mount-data"
+
+              # A Wants= on a unit that is not installed is silently ignored,
+              # so "enabled" and "present" are different questions and only one
+              # of them was ever being asked.
+              echo "--- installed unit files ---"
+              for u in NetworkManager.service systemd-repart.service \
+                       greetd.service bluetooth.service sshd.service; do
+                test -f "/mnt/root/usr/lib/systemd/system/$u" \
+                  || { echo "FAIL: not installed at all: $u"; exit 1; }
                 echo "  ok  $u"
               done
               umount /mnt/root
