@@ -30,8 +30,12 @@ from typing import Dict, List, Optional
 
 log = logging.getLogger("pentad.installer")
 
-# Below this and it cannot hold the console.
-MIN_TARGET_BYTES = 20 * 1024 ** 3
+# Below this and it cannot hold the console. The image itself is a 2 GiB ESP
+# plus a 12 GiB root, and systemd-repart then wants room for swap and a data
+# partition on top — 20 GiB was under the floor and let the UI offer disks the
+# clone could only ever half-fill. The real gate is `install()`'s check that the
+# target is at least as large as the source; this is the coarse filter.
+MIN_TARGET_BYTES = 24 * 1024 ** 3
 
 # The discoverable-partitions GUID for an EFI System Partition.
 ESP_TYPE_GUID = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
@@ -181,6 +185,19 @@ class Installer:
         if source == device:
             raise ValueError("source and target are the same device")
 
+        # The clone is a byte-for-byte dd of the whole source device, so a
+        # target smaller than the source cannot hold it. `target_size` was
+        # being passed into _clone and never looked at: the install ran, wrote
+        # for however many minutes the smaller disk took to fill, and only then
+        # failed on ENOSPC — having already destroyed whatever was there.
+        # Refuse before touching anything.
+        source_size = _device_size(source) if not self._mock else 16 * 1024 ** 3
+        if source_size and target.size_bytes and target.size_bytes < source_size:
+            raise ValueError(
+                f"{device} is smaller than the device PENTA is running from "
+                f"({target.size_bytes // 1024 ** 3} GB vs "
+                f"{source_size // 1024 ** 3} GB) — the clone would not fit")
+
         self._running = True
         asyncio.create_task(self._clone(source, device, target.size_bytes))
         return {"started": True, "source": source, "target": device}
@@ -300,7 +317,16 @@ class Installer:
 
 
 def _esp_partition_number(disk: str) -> Optional[int]:
-    """Partition number of the EFI System Partition on a disk."""
+    """Partition number of the EFI System Partition on a disk.
+
+    Read off the device name (nvme0n1p1 → 1, sda1 → 1) rather than counted from
+    the position in lsblk's list. Enumerating assumes the partitions are
+    numbered 1..n with no gaps and listed in order; a disk with a deleted
+    partition breaks that, and the consequence is `efibootmgr --part` naming the
+    wrong partition — a boot entry that points at nothing, on a machine whose
+    previous OS has just been erased.
+    """
+    import re
     import subprocess
     try:
         out = subprocess.run(
@@ -308,9 +334,14 @@ def _esp_partition_number(disk: str) -> Optional[int]:
             capture_output=True, text=True, timeout=10).stdout
         tree = json.loads(out).get("blockdevices", [])
         kids = tree[0].get("children", []) if tree else []
-        for i, part in enumerate(kids, start=1):
-            if (part.get("parttype") or "").lower() == ESP_TYPE_GUID:
-                return i
+        for part in kids:
+            if (part.get("parttype") or "").lower() != ESP_TYPE_GUID:
+                continue
+            m = re.search(r"(\d+)$", part.get("name") or "")
+            if m:
+                return int(m.group(1))
+            log.warning("ESP %r has no partition number in its name",
+                        part.get("name"))
     except Exception as exc:                                    # noqa: BLE001
         log.warning("could not identify the ESP: %s", exc)
     return None

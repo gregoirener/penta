@@ -70,13 +70,26 @@ _ACF_KEY = re.compile(r'"(\w+)"\s+"([^"]*)"')
 
 # Steam installation roots, not steamapps dirs — the library folders are
 # discovered from inside them.
+#
+# The console account's home is listed absolutely as well as via `~`. pentad is
+# a system service running as root, so `~` expands to /root unless HOME is set
+# in the unit (it is — see pentad.service). Relying on that alone meant one
+# missing Environment= line produced an empty library on every real console
+# while --mock on the dev machine looked perfect.
+CONSOLE_HOME = "/home/penta"
+
 STEAM_ROOTS = [
-    # Linux
+    # Linux, relative to whoever we are
     "~/.steam/steam",
     "~/.local/share/Steam",
     "~/.steam/root",
     "~/.steam/debian-installation",
     "~/.var/app/com.valvesoftware.Steam/data/Steam",       # flatpak
+    # ...and the console account explicitly, whoever we are
+    f"{CONSOLE_HOME}/.steam/steam",
+    f"{CONSOLE_HOME}/.steam/root",
+    f"{CONSOLE_HOME}/.local/share/Steam",
+    f"{CONSOLE_HOME}/.var/app/com.valvesoftware.Steam/data/Steam",
     "/usr/lib/steam",
     # macOS — so the real library is testable on the dev machine
     "~/Library/Application Support/Steam",

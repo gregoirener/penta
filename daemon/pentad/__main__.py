@@ -156,10 +156,10 @@ async def run(mock: bool) -> None:
             argv = ["open", url]          # macOS resolves steam:// itself
         else:
             raise RuntimeError("Steam is not installed")
-        await asyncio.create_subprocess_exec(
-            *argv,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL)
+        # Same trap as launching a title: as a root service we have no display
+        # and no session, so a bare `steam <url>` exits immediately and the
+        # store page never opens. Go through the session helpers.
+        await session.spawn_detached(argv)
         return {"ok": True, "url": url}
 
     @server.command("network.status")
