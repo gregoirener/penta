@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+# Build a complete PENTA install stick on a Mac, in one command.
+#
+#   sudo ./tools/make-installer-stick.sh disk4
+#
+# Produces a stick that boots the PENTA installer with the console image
+# sitting on it, compressed, ready to be written to an internal disk. The stick
+# never runs PENTA — it runs an installer, and PENTA is only ever decompressed
+# onto the target NVMe.
+#
+#   ┌─ PENTA_IESP     512 MiB  the installer's bootloader
+#   ├─ PENTA_INST       3 GiB  the installer OS  (~1 GB used)
+#   └─ PENTA_PAYLOAD    6 GiB  penta-<sha>.img.xz lives here, compressed
+#
+# Nothing is stored on the Mac. Both downloads are streamed — the installer
+# straight to the raw device, the console image straight onto the stick's
+# payload volume — because this Mac has under 8 GB free and the two files come
+# to ~2.4 GB. That is also why there is no "download then flash" mode.
+
+set -euo pipefail
+
+REPO="${PENTA_REPO:-gregoirener/penta}"
+DISK="${1:-}"
+IMAGE_TAG="${2:-latest}"
+
+# 8 GB, decimal. The partition layout above needs 9.5 GiB, so this is the
+# smallest stick that can physically hold it.
+MIN_STICK=$((8 * 1000 * 1000 * 1000))
+PAYLOAD_VOL="/Volumes/PENTA_PAYLOAD"
+
+die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+say()  { printf '\033[36m==>\033[0m %s\n' "$*"; }
+warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
+
+[[ -n "$DISK" ]] || die "usage: sudo $0 <diskN> [console-image-tag]
+       see: diskutil list external physical"
+[[ "$DISK" =~ ^disk[0-9]+$ ]] || die "expected a whole-disk id like 'disk4', got '$DISK'"
+[[ $EUID -eq 0 ]] || die "run with sudo — writing a raw device needs root"
+command -v gh >/dev/null || die "gh not found — brew install gh"
+command -v xz >/dev/null || die "xz not found — brew install xz"
+
+DEV="/dev/$DISK"
+RDEV="/dev/r$DISK"          # raw device: an order of magnitude faster on macOS
+[[ -e "$DEV" ]] || die "$DEV does not exist"
+
+# --- Refuse anything that is not an external physical disk --------------------
+INFO="$(diskutil info "$DISK")"
+grep -q "Device Location:.*External" <<<"$INFO" || die "$DISK is not external. Refusing."
+grep -q "Virtual:.*No"              <<<"$INFO" || die "$DISK is virtual. Refusing."
+
+STICK_BYTES="$(awk -F'[()]' '/Disk Size/{print $2; exit}' <<<"$INFO" | awk '{print $1}')"
+SIZE_H="$(awk -F: '/Disk Size/{print $2; exit}' <<<"$INFO" | xargs)"
+NAME="$(awk -F: '/Device \/ Media Name/{print $2; exit}' <<<"$INFO" | xargs)"
+
+if [[ "${STICK_BYTES:-0}" =~ ^[0-9]+$ ]] && (( STICK_BYTES < MIN_STICK )); then
+  die "$DISK is $SIZE_H — the installer layout needs 9.5 GiB, so 8 GB minimum"
+fi
+
+# --- Resolve both assets before destroying anything ---------------------------
+# Doing this first means a missing release is a message, not a wiped stick.
+say "resolving the installer from $REPO"
+INST_URL="$(gh release list --repo "$REPO" --limit 30 \
+            --json tagName,name -q '.[] | select(.tagName | startswith("installer-")) | .tagName' \
+            | head -1)"
+[[ -n "$INST_URL" ]] || die "no 'installer-*' release found.
+       Run the 'build installer' workflow first:
+         gh workflow run installer.yml --repo $REPO"
+
+INST_ASSET="$(gh release view "$INST_URL" --repo "$REPO" --json assets \
+              -q '.assets[] | select(.name | endswith(".img.xz")) | .url' | head -1)"
+[[ -n "$INST_ASSET" ]] || die "release $INST_URL has no .img.xz asset"
+say "  installer: $INST_URL"
+
+say "resolving the console image ($IMAGE_TAG)"
+if [[ "$IMAGE_TAG" == "latest" ]]; then
+  IMAGE_TAG="$(gh release list --repo "$REPO" --limit 30 --json tagName \
+               -q '.[] | select(.tagName | startswith("build-")) | .tagName' | head -1)"
+fi
+[[ -n "$IMAGE_TAG" ]] || die "no 'build-*' console image release found"
+
+IMG_NAME="$(gh release view "$IMAGE_TAG" --repo "$REPO" --json assets \
+            -q '.assets[] | select(.name | test("^penta-[0-9a-f]+\\.img\\.(xz|zst)$")) | .name' | head -1)"
+IMG_ASSET="$(gh release view "$IMAGE_TAG" --repo "$REPO" --json assets \
+             -q '.assets[] | select(.name | test("^penta-[0-9a-f]+\\.img\\.(xz|zst)$")) | .url' | head -1)"
+[[ -n "$IMG_ASSET" ]] || die "release $IMAGE_TAG has no penta-*.img.xz asset"
+say "  console:   $IMAGE_TAG / $IMG_NAME"
+
+# --- Confirm ------------------------------------------------------------------
+printf '\n  \033[1;31mTHIS ERASES %s COMPLETELY\033[0m\n\n' "$DEV"
+printf '    Media : %s\n    Size  : %s\n\n' "$NAME" "$SIZE_H"
+diskutil list "$DISK" || true
+printf '\nType \033[1m%s\033[0m to confirm, anything else to abort: ' "$DISK"
+read -r CONFIRM
+[[ "$CONFIRM" == "$DISK" ]] || die "aborted — nothing was written"
+
+# --- 1. Installer image, streamed to the raw device ---------------------------
+say "unmounting $DISK"
+diskutil unmountDisk "$DEV"
+
+say "writing the installer (streamed; nothing lands on this Mac)"
+# conv=sparse skips runs of zeros. The 6 GiB payload partition is empty, so
+# this is the difference between writing 9.5 GiB and writing ~1 GB.
+if command -v pv >/dev/null; then
+  curl -fL --retry 3 --retry-delay 2 "$INST_ASSET" \
+    | pv -N installer | xz -dc | dd of="$RDEV" bs=4m conv=sparse
+else
+  warn "pv not installed (brew install pv) — press Ctrl-T for progress"
+  curl -fL --retry 3 --retry-delay 2 "$INST_ASSET" \
+    | xz -dc | dd of="$RDEV" bs=4m conv=sparse
+fi
+sync
+
+# --- 2. Wait for the payload volume to appear ---------------------------------
+say "waiting for the $( basename "$PAYLOAD_VOL" ) volume"
+diskutil mountDisk "$DEV" >/dev/null 2>&1 || true
+for _ in $(seq 1 30); do
+  [[ -d "$PAYLOAD_VOL" ]] && break
+  sleep 1
+  diskutil mountDisk "$DEV" >/dev/null 2>&1 || true
+done
+[[ -d "$PAYLOAD_VOL" ]] || die "$PAYLOAD_VOL never mounted.
+       The stick is written and bootable, but the console image is not on it.
+       Mount it in Finder and copy $IMG_NAME onto the PENTA_PAYLOAD volume by
+       hand, or re-run this script."
+
+# --- 3. Console image, streamed onto the stick --------------------------------
+say "downloading the console image straight onto the stick (~2 GB)"
+if command -v pv >/dev/null; then
+  curl -fL --retry 3 --retry-delay 2 "$IMG_ASSET" \
+    | pv -N "$IMG_NAME" > "$PAYLOAD_VOL/$IMG_NAME"
+else
+  curl -fL --retry 3 --retry-delay 2 --progress-bar "$IMG_ASSET" \
+    -o "$PAYLOAD_VOL/$IMG_NAME"
+fi
+
+# The most likely failure here is a FAT32 write that ran out of room, and a
+# truncated payload fails hours later mid-install. Check it now.
+WROTE=$(stat -f%z "$PAYLOAD_VOL/$IMG_NAME" 2>/dev/null || echo 0)
+EXPECT=$(gh release view "$IMAGE_TAG" --repo "$REPO" --json assets \
+         -q ".assets[] | select(.name == \"$IMG_NAME\") | .size" | head -1)
+if [[ "${EXPECT:-0}" =~ ^[0-9]+$ ]] && (( WROTE != EXPECT )); then
+  die "payload is $WROTE bytes, expected $EXPECT — the copy is incomplete"
+fi
+say "payload verified: $((WROTE / 1000000)) MB"
+
+sync
+say "ejecting"
+diskutil eject "$DEV" || warn "could not eject — do it from Finder"
+
+printf '\n  \033[32mDone.\033[0m The stick boots the PENTA installer.\n'
+cat <<EOF
+
+    1. Plug it into the Nitro 5 and tap F12 at power-on
+    2. Pick the USB device
+    3. The installer lists the disks — choose the NVMe and type ERASE NVME0N1
+    4. When it finishes, remove the stick and reboot
+
+  PENTA is decompressed onto the NVMe during step 3. It is never unpacked on
+  the stick, and the stick is not needed again afterwards — the installer
+  registers PENTA in the firmware boot menu, so the machine boots it directly.
+
+EOF

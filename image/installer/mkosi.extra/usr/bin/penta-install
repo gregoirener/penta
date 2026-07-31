@@ -18,10 +18,13 @@ PAYLOAD_LABEL=PENTA_PAYLOAD
 PAYLOAD_MNT=/run/penta-payload
 LOG=/run/penta-install.log
 
-# 24 GiB: 2 GiB ESP + 12 GiB root, then systemd-repart wants room for swap and
-# a data partition on top. Below this the install technically fits and the
-# console has nowhere to put a game.
-MIN_TARGET=$((24 * 1024 * 1024 * 1024))
+# 32 GB, decimal — the number printed on the box, so a disk sold as "32 GB"
+# passes rather than being refused for being 32e9 and not 32*1024^3.
+#
+# The image itself is 14 GiB (2 GiB ESP + 12 GiB root) and systemd-repart then
+# wants room for swap and a data partition on top. Anything much under this
+# technically completes and leaves a console with nowhere to put a game.
+MIN_TARGET=$((32 * 1000 * 1000 * 1000))
 
 bold=$'\033[1m'; dim=$'\033[2m'; red=$'\033[31m'; grn=$'\033[32m'
 ylw=$'\033[33m'; cyn=$'\033[36m'; rst=$'\033[0m'
@@ -118,7 +121,7 @@ scan_disks() {
                 if [ "$path" = "$boot" ]; then
                         note="this is the stick the installer is running from"
                 elif [ "$sz" -lt "$MIN_TARGET" ]; then
-                        note="too small — needs 24 GB or more"
+                        note="too small — PENTA needs 32 GB or more"
                 elif [ "$rm" = "1" ]; then
                         note="removable"
                 fi
