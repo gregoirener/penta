@@ -1,0 +1,101 @@
+#!/bin/sh
+# Mount the data partition on the boot that created it.
+#
+# systemd-repart runs during sysinit, which is *after* local-fs.target has
+# already tried and given up on every `nofail` line in /etc/fstab. So on the
+# one boot where the partition first appears, nothing ever mounts it: /games,
+# the captures and art volumes and swap are all missing, the self-check reports
+# "data_partition FAIL", storage reports the root filesystem, and it all
+# silently fixes itself on the *second* boot. Which is how a real bug hides.
+#
+# This runs after repart, waits for the partition to show up, repairs anything
+# repart could not create, and starts the mounts by hand.
+#
+# Never fatal: no path through here may fail the boot.
+
+set -u
+
+DATA=/dev/disk/by-label/PENTA_DATA
+SWAP=/dev/disk/by-label/PENTA_SWAP
+
+log() { echo "penta-mount-data: $*"; }
+
+# udev has to have processed the new partitions before the by-label links exist.
+udevadm settle --timeout=30 2>/dev/null || true
+
+# repart has only just written the partition table; give the kernel and udev a
+# few seconds to catch up rather than assuming they already have.
+i=0
+while [ ! -e "$DATA" ] && [ "$i" -lt 30 ]; do
+        sleep 1
+        i=$((i + 1))
+done
+
+if [ ! -e "$DATA" ]; then
+        log "no PENTA_DATA partition — running on root only"
+        exit 0
+fi
+
+# --- Repair missing subvolumes ------------------------------------------------
+# fstab mounts these with subvol=, which fails outright if the path is a plain
+# directory rather than a subvolume. Cheap to check, and it turns an unbootable
+# -looking console into a working one.
+TMP=$(mktemp -d /tmp/penta-data.XXXXXX 2>/dev/null) || TMP=""
+if [ -n "$TMP" ]; then
+        if mount -t btrfs -o noatime "$DATA" "$TMP" 2>/dev/null; then
+                for sub in games captures art; do
+                        if [ ! -d "$TMP/$sub" ]; then
+                                log "creating missing subvolume /$sub"
+                                btrfs subvolume create "$TMP/$sub" >/dev/null 2>&1 \
+                                        || log "could not create /$sub"
+                        fi
+                done
+                umount "$TMP" 2>/dev/null || true
+        else
+                log "could not inspect $DATA; leaving it to fstab"
+        fi
+        rmdir "$TMP" 2>/dev/null || true
+fi
+
+# --- Start the mounts ---------------------------------------------------------
+# These are the units systemd-fstab-generator derives from /etc/fstab.
+for unit in games.mount var-lib-penta-captures.mount var-lib-penta-art.mount; do
+        systemctl start --no-block "$unit" 2>/dev/null \
+                || log "could not start $unit"
+done
+
+# --- Swap ---------------------------------------------------------------------
+if [ -e "$SWAP" ]; then
+        swapon -a 2>/dev/null || log "swapon failed"
+fi
+
+# Ownership: the subvolumes are created by root, but everything under /games
+# belongs to the console account. tmpfiles.d ran before the mount existed, so
+# it set permissions on the underlying directory and not on what is now mounted
+# over it.
+for d in /games /games/native /games/roms /var/lib/penta/captures /var/lib/penta/art; do
+        [ -d "$d" ] || mkdir -p "$d" 2>/dev/null || continue
+        chown penta:penta "$d" 2>/dev/null || true
+done
+
+# --- Steam's library belongs on the data volume -------------------------------
+# Steam installs itself *and every game* into ~/.local/share/Steam, which is on
+# the 12 GiB root partition. One modern title fills it, the root filesystem goes
+# read-only, and the console stops working in a way that looks nothing like
+# "the disk is full" — the ~900 GiB data partition sits there empty the whole
+# time. Point Steam at it before Steam ever runs.
+if mountpoint -q /games 2>/dev/null; then
+        mkdir -p /games/steam 2>/dev/null || true
+        chown penta:penta /games/steam 2>/dev/null || true
+        # Only if nothing is there yet: a real directory from an earlier boot
+        # has games in it and must not be replaced by a symlink.
+        if [ ! -e /home/penta/.local/share/Steam ]; then
+                mkdir -p /home/penta/.local/share 2>/dev/null || true
+                ln -s /games/steam /home/penta/.local/share/Steam 2>/dev/null \
+                        && log "Steam library -> /games/steam"
+                chown -h penta:penta /home/penta/.local/share/Steam 2>/dev/null || true
+        fi
+fi
+
+log "done"
+exit 0

@@ -1,0 +1,55 @@
+# Which services are enabled in the image.
+#
+# THIS FILE IS THE REASON ANYTHING STARTS AT ALL.
+#
+# Enablement in this tree is hand-written `.wants/` symlinks under
+# /etc/systemd/system — and `systemctl preset-all`, which mkosi runs while
+# building the image, is precisely the command that deletes them. Arch ships
+# /usr/lib/systemd/system-preset/99-default.preset containing `disable *`, so
+# preset-all walks the image and removes every enablement symlink in /etc that
+# the preset does not explicitly ask for. NetworkManager, sshd, bluetooth,
+# systemd-repart, greetd, pentad: all of them are enabled by a symlink that a
+# later step of the same build may throw away. Whether the console boots then
+# depends on mkosi's internal step order, which is not ours to depend on.
+#
+# Preset rules are first-match-wins across all preset directories sorted by
+# filename. 00- sorts before 99-, so these lines win and preset-all *creates*
+# those symlinks instead of removing them. Everything not listed still falls
+# through to Arch's `disable *`.
+#
+# 00- sorts first, so these lines win and everything else still falls through
+# to Arch's `disable *`.
+
+# --- PENTA's own units --------------------------------------------------------
+# Also declared as static Wants= in penta.target, which no preset can touch, so
+# these survive whichever way the build goes. Belt and braces, on purpose: this
+# is the difference between a console and a black screen.
+enable pentad.service
+enable greetd.service
+enable penta-beacon.service
+enable penta-selftest.service
+enable penta-mount-data.service
+
+# --- Distribution units the console cannot work without -----------------------
+# A console with no network cannot sign into Steam, load cover art, or show a
+# store. NetworkManager being disabled looks exactly like broken Wi-Fi drivers.
+enable NetworkManager.service
+
+# The clock has to be right before any TLS handshake succeeds. A wrong clock
+# shows up as "Steam won't sign in" and "no cover art", never as "wrong clock".
+enable systemd-timesyncd.service
+
+# DualSense over Bluetooth.
+enable bluetooth.service
+
+# Grows the disk on first boot (see /usr/lib/repart.d/). Usually vendor-enabled
+# under /usr/lib/systemd/system/sysinit.target.wants/, which preset-all cannot
+# touch — listed anyway so the intent is written down somewhere.
+enable systemd-repart.service
+
+# The dev loop (tools/devsync.sh) comes in over ssh. Key-only; see
+# /etc/ssh/sshd_config.d/10-penta.conf.
+enable sshd.service
+
+# NVMe and SSDs both want this and nothing else is going to run it.
+enable fstrim.timer

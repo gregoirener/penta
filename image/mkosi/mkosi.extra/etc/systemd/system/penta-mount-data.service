@@ -1,0 +1,20 @@
+[Unit]
+Description=PENTA data volume (first boot)
+Documentation=file:///usr/share/penta/DESIGN.md
+# systemd-repart creates the data and swap partitions during sysinit, which is
+# after local-fs.target has already skipped every nofail line in fstab. Without
+# this unit the console spends its entire first boot with no /games.
+After=systemd-repart.service local-fs.target
+Wants=systemd-repart.service
+Before=pentad.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/penta-mount-data
+# It reports its own problems and exits 0 regardless. Nothing here is allowed
+# to be the reason the console does not reach its menu.
+TimeoutStartSec=90
+
+[Install]
+WantedBy=penta.target

@@ -8,11 +8,14 @@ After=pentad.service greetd.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# The console boots silently on purpose (quiet loglevel=3), which means a
-# successful boot produces no output at all — indistinguishable from a hang.
-# This writes one line to the console once the stack is actually up, so CI (and
-# a serial cable on real hardware) can tell "silent and fine" from "dead".
-ExecStart=/bin/sh -c 'echo "PENTA-BOOT-OK target=penta kernel=$(uname -r) pentad=$(systemctl is-active pentad.service) greetd=$(systemctl is-active greetd.service)" > /dev/console'
+# A successful boot is otherwise indistinguishable from a hang. This writes one
+# line saying how far the stack actually got.
+#
+# To /dev/kmsg *and* /dev/console, because they are not the same place: kmsg
+# reaches every registered console (so the serial port, so CI), /dev/console
+# reaches whichever is last on the command line (so the laptop panel). Writing
+# to only one meant it was always invisible from wherever you were looking.
+ExecStart=/usr/bin/penta-beacon
 
 [Install]
 WantedBy=penta.target

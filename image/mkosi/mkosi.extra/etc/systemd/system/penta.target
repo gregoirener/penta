@@ -8,10 +8,35 @@ AllowIsolate=yes
 # Wants=, not Requires=, on multi-user: one failed unit anywhere in the system
 # must not stop the console from starting.
 #
-# Declared here, not via [Install] symlinks in penta.target.wants/.
+# Declared here as well as via symlinks in penta.target.wants/.
 # `systemctl preset-all` runs during the image build and Arch's default preset
-# is `disable *`, which would remove those symlinks and leave this target empty.
-# A static Wants= is immune to that.
+# is `disable *`, which deletes those symlinks and leaves this target empty. A
+# static Wants= is immune to that, because nothing can "disable" it.
+# /usr/lib/systemd/system-preset/00-penta.preset now makes preset-all create
+# the symlinks rather than remove them; this stays as the belt to those braces,
+# because a target that starts nothing is indistinguishable from a dead machine.
+Wants=penta-mount-data.service
 Wants=pentad.service
 Wants=penta-beacon.service
+Wants=penta-selftest.service
 Wants=greetd.service
+
+# Network is not optional on a console: no network, no Steam, no art, no store.
+Wants=NetworkManager.service
+Wants=bluetooth.service
+
+# The escape hatch. greetd owns VT1 and logind is told never to spawn a getty
+# on its own (NAutoVTs=0), which means that when the session fails there is no
+# way whatsoever to get a prompt — you get a black screen and a power button.
+# One explicitly-started getty on VT2 turns that into Ctrl+Alt+F2.
+#
+# Remove this line the day the console ships. Until then it is worth more than
+# every other diagnostic in the tree combined.
+Wants=getty@tty2.service
+
+# NOTE: this target is only ever reached because /etc/systemd/system/default.target
+# is a symlink to it. If that symlink is missing or does not survive the build,
+# the machine boots Arch's default (graphical.target), nothing above starts, and
+# you get a bare system with no menu and no obvious error. The image build now
+# asserts the symlink resolves here (see .github/workflows/image.yml) because
+# nothing else in the boot would tell you.

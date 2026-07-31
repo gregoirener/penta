@@ -1,7 +1,14 @@
 # The data partition does not exist until systemd-repart creates it on first
 # boot, so every entry is `nofail`: a missing games volume must never stop the
 # console from reaching its menu.
-LABEL=PENTA_DATA  /games                    btrfs  subvol=/games,compress=zstd:1,noatime,nofail    0 0
-LABEL=PENTA_DATA  /var/lib/penta/captures   btrfs  subvol=/captures,compress=zstd:1,noatime,nofail 0 0
-LABEL=PENTA_DATA  /var/lib/penta/art        btrfs  subvol=/art,noatime,nofail                      0 0
-LABEL=PENTA_SWAP  none                      swap   defaults,nofail                                 0 0
+#
+# x-systemd.device-timeout is explicit rather than inherited. The manager
+# default used to be `infinity`, which meant these did not fail on the first
+# boot — they queued a job against a device that would not exist for another
+# thirty seconds and sat there, forever, with nothing on screen to say so.
+# Ten seconds, then give up; penta-mount-data.service mounts them properly once
+# repart has actually made the partitions.
+LABEL=PENTA_DATA  /games                    btrfs  subvol=/games,compress=zstd:1,noatime,nofail,x-systemd.device-timeout=10    0 0
+LABEL=PENTA_DATA  /var/lib/penta/captures   btrfs  subvol=/captures,compress=zstd:1,noatime,nofail,x-systemd.device-timeout=10 0 0
+LABEL=PENTA_DATA  /var/lib/penta/art        btrfs  subvol=/art,noatime,nofail,x-systemd.device-timeout=10                      0 0
+LABEL=PENTA_SWAP  none                      swap   defaults,nofail,x-systemd.device-timeout=10                                 0 0

@@ -1,7 +1,7 @@
 [Unit]
 Description=PENTA system daemon
 Documentation=file:///usr/share/penta/DESIGN.md
-After=multi-user.target bluetooth.service
+After=multi-user.target bluetooth.service penta-mount-data.service
 Wants=bluetooth.service
 
 [Service]
@@ -9,18 +9,37 @@ Type=exec
 ExecStart=/usr/bin/python3 -m pentad
 Environment=PYTHONPATH=/opt/penta/daemon
 Environment=PYTHONUNBUFFERED=1
+
+# pentad runs as root, so ~ is /root — and Steam's manifests live in the
+# console account's home. Without this, expanduser("~/.steam/steam") looked in
+# /root, found nothing, and the library was empty on every real console while
+# working perfectly in --mock. Nothing in the logs said so.
+Environment=HOME=/home/penta
+Environment=XDG_DATA_HOME=/home/penta/.local/share
+
 Restart=always
 RestartSec=1
 
-# Needs raw input and hidraw: the PS button has to be readable while a game
-# holds focus, and adaptive triggers only exist over raw HID.
-DeviceAllow=char-input rw
-DeviceAllow=char-hidraw rw
+# NO DeviceAllow= HERE. Setting any DeviceAllow flips DevicePolicy to `closed`,
+# which permits the listed device groups and *nothing else* — including every
+# block device. Install-to-disk is `dd if=/dev/sda of=/dev/nvme0n1`, so with
+# `DeviceAllow=char-input rw` present the installer could not open either end
+# and every install failed at the first read. pentad is root; DAC and the udev
+# rules in /etc/udev/rules.d/60-penta-input.rules are what actually govern
+# access to input and hidraw.
+DevicePolicy=auto
 SupplementaryGroups=input
 
 # read-only, not yes: pentad reads Steam's manifests out of the penta user's
 # home. ProtectHome=yes hides /home entirely and the library is always empty.
+# The exceptions are for titles launched from here — Steam writes to its own
+# library, games write saves, and a read-only home makes every one of them
+# fail in a way that looks like a broken game rather than a broken sandbox.
 ProtectHome=read-only
+ReadWritePaths=-/home/penta
+ReadWritePaths=-/games
+ReadWritePaths=-/var/lib/penta
+
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes

@@ -1,0 +1,39 @@
+#!/bin/sh
+# One line, on every console, saying how far the boot got.
+#
+# CI greps the serial log for PENTA-BOOT-OK; a person with a black screen
+# reads it off the panel. Both need it, and they are different devices, so it
+# goes to both. Never fails: a diagnostic that can fail the boot is a bug.
+
+set -u
+
+state() { systemctl is-active "$1" 2>/dev/null || echo unknown; }
+
+MSG="PENTA-BOOT-OK kernel=$(uname -r) \
+target=$(systemctl get-default 2>/dev/null || echo unknown) \
+pentad=$(state pentad.service) \
+greetd=$(state greetd.service) \
+network=$(state NetworkManager.service) \
+repart=$(state systemd-repart.service) \
+games=$(findmnt -n -o SOURCE /games 2>/dev/null || echo unmounted) \
+swap=$(awk 'NR>1{print $1; exit}' /proc/swaps 2>/dev/null || echo none)"
+
+# The session runs as an unprivileged user and cannot write to any console, so
+# when the screen is black the reason is only in its log. Carry the last line
+# out to where it can be read. This is the difference between "black screen"
+# and "gamescope exited with 1".
+SESSION_LOG=/var/log/penta/session.log
+if [ -s "$SESSION_LOG" ]; then
+        MSG="$MSG session=\"$(tail -n 1 "$SESSION_LOG" 2>/dev/null | tr -d '\n\r')\""
+fi
+
+# kmsg reaches every registered console (serial included); /dev/console reaches
+# the one the kernel command line ended with (the panel). Test writability
+# first: a failed redirection is reported by the shell itself, before `2>` has
+# been applied, so `> /dev/kmsg 2>/dev/null` still prints the error.
+for dest in /dev/kmsg /dev/console; do
+        [ -w "$dest" ] && echo "$MSG" > "$dest" 2>/dev/null
+done
+echo "$MSG"
+
+exit 0

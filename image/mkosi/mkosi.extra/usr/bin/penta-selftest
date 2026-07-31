@@ -53,6 +53,23 @@ check swap_active     sh -c 'test -s /proc/swaps && test $(wc -l < /proc/swaps) 
 check gamescope_bin   test -x /usr/bin/gamescope
 check menu_binary     test -x /opt/penta/penta-menu
 
+# --- Boot wiring ----------------------------------------------------------------
+# Any one of these being wrong produces the same symptom — a machine that comes
+# up as ordinary Arch with no menu — and none of them announce themselves:
+# default.target not resolving to penta.target, greetd removed by Arch's
+# `disable *` preset, NetworkManager never enabled. Cheap to check, and the menu
+# can then name the problem instead of showing an empty screen.
+check boot_target     sh -c 'test "$(systemctl get-default)" = "penta.target"'
+check greetd_active   systemctl is-active greetd
+check pentad_active   systemctl is-active pentad
+check network_active  systemctl is-active NetworkManager
+
+# --- Install path ---------------------------------------------------------------
+# Install-to-disk shells out to both of these. Missing, it fails partway through
+# writing a disk it has already erased.
+check efibootmgr_bin  test -x /usr/bin/efibootmgr
+check sgdisk_bin      test -x /usr/bin/sgdisk
+
 echo "=== $pass passed, $fail failed ==="
 
 # Hand the results to the menu. `jq` isn't installed, so build it by hand.
