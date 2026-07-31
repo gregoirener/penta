@@ -7,7 +7,15 @@
 
 set -u
 
-state() { systemctl is-active "$1" 2>/dev/null || echo unknown; }
+# `systemctl is-active` exits non-zero for every state except "active" — so
+# `is-active || echo unknown` printed BOTH the real state and "unknown", on two
+# lines, and the beacon came out as three wrapped lines reading
+# "greetd=activating / unknown network=active". Take the output, and only fall
+# back when there isn't any.
+state() {
+        s=$(systemctl is-active "$1" 2>/dev/null)
+        [ -n "$s" ] && echo "$s" || echo unknown
+}
 
 MSG="PENTA-BOOT-OK kernel=$(uname -r) \
 target=$(systemctl get-default 2>/dev/null || echo unknown) \
@@ -31,9 +39,12 @@ fi
 # the one the kernel command line ended with (the panel). Test writability
 # first: a failed redirection is reported by the shell itself, before `2>` has
 # been applied, so `> /dev/kmsg 2>/dev/null` still prints the error.
-for dest in /dev/kmsg /dev/console; do
-        [ -w "$dest" ] && echo "$MSG" > "$dest" 2>/dev/null
-done
+#
+# <2> is KERN_CRIT. Not drama — a plain write to /dev/kmsg defaults to
+# KERN_INFO, which the console loglevel can and does filter out, and this line
+# existing but being invisible is the exact failure it is here to prevent.
+[ -w /dev/kmsg ] && echo "<2>$MSG" > /dev/kmsg 2>/dev/null
+[ -w /dev/console ] && echo "$MSG" > /dev/console 2>/dev/null
 echo "$MSG"
 
 exit 0
