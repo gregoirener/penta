@@ -20,6 +20,14 @@
 # 00- sorts first, so these lines win and everything else still falls through
 # to Arch's `disable *`.
 
+# --- The boot target ----------------------------------------------------------
+# penta.target has no [Install] section, so this line enables nothing. What it
+# does is keep the target out of preset-all's *disable* set — and `systemctl
+# disable` removes every symlink pointing at a unit, [Install] or not. That
+# includes /etc/systemd/system/default.target, which is a symlink to this
+# target. The build was deleting the boot target and saying nothing.
+enable penta.target
+
 # --- PENTA's own units --------------------------------------------------------
 # Also declared as static Wants= in penta.target, which no preset can touch, so
 # these survive whichever way the build goes. Belt and braces, on purpose: this

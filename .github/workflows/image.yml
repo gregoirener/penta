@@ -154,30 +154,45 @@ jobs:
                 echo "  ok  $f"
               done
 
+              # Print the whole thing before asserting anything about it. The
+              # build deletes enablement symlinks (systemctl preset-all, Arch
+              # preset `disable *`), and every consequence — no menu, no
+              # network, no data partition — looks like a different bug on the
+              # running machine. This listing is where they are all one fact.
+              echo "--- /etc/systemd/system as shipped ---"
+              ls -lR /mnt/root/etc/systemd/system | sed "s|/mnt/root||"
+
+              echo "--- mkosi.finalize ---"
+              if [ -f /mnt/root/usr/lib/penta/build-info ]; then
+                cat /mnt/root/usr/lib/penta/build-info
+              else
+                echo "FAIL: mkosi.finalize did not run — the enablement symlinks"
+                echo "      are then whatever preset-all left behind, which is"
+                echo "      the bug this image exists to not have."
+                exit 1
+              fi
+
               # If this symlink is wrong or does not survive the build, the
               # image is complete and correct and boots graphical.target — so
               # penta.target, and with it greetd, pentad and the menu, never
-              # start. Nothing about the machine looks broken. Assert it here,
-              # because no later stage can tell the difference.
-              echo "--- default.target ---"
-              ls -l /mnt/root/etc/systemd/system/default.target || true
+              # start. Nothing about the machine looks broken.
               want=$(readlink /mnt/root/etc/systemd/system/default.target || echo "")
               case "$want" in
                 *penta.target) echo "  ok  default.target -> $want" ;;
                 *) echo "FAIL: default.target is '$want', not penta.target"; exit 1 ;;
               esac
 
-              # Not fatal — penta.target carries static Wants= for all of these
-              # — but if preset-all did not take, they start late or not at all
-              # and this is the only place it is visible.
-              echo "--- enabled units (informational) ---"
-              for u in NetworkManager.service sshd.service bluetooth.service \
-                       systemd-timesyncd.service greetd.service pentad.service; do
-                if find /mnt/root/etc/systemd/system -name "$u" | grep -q .; then
-                  echo "  enabled   $u"
-                else
-                  echo "  NOT enabled  $u"
-                fi
+              # Fatal for the first three: no network means no Steam and no
+              # cover art, and no repart means no /games and no swap, which is
+              # where the fstab timeouts came from. penta.target's static
+              # Wants= covers greetd and pentad either way.
+              for u in multi-user.target.wants/NetworkManager.service \
+                       sysinit.target.wants/systemd-repart.service \
+                       penta.target.wants/greetd.service \
+                       penta.target.wants/pentad.service; do
+                test -L "/mnt/root/etc/systemd/system/$u" \
+                  || { echo "FAIL: not enabled: $u"; exit 1; }
+                echo "  ok  $u"
               done
               umount /mnt/root
 

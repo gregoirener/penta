@@ -1,0 +1,85 @@
+#!/bin/sh
+# Put the enablement symlinks back, after everything else has had its turn.
+#
+# WHY THIS EXISTS
+#
+# Unit enablement in this image is symlinks under /etc/systemd/system, shipped
+# in mkosi.extra. `systemctl preset-all` runs during the build, Arch's preset is
+# `disable *`, and `systemctl disable` removes *every* symlink pointing at a
+# unit — including alias symlinks like default.target -> penta.target, and
+# including units with no [Install] section at all.
+#
+# So the build was quietly deleting: default.target (the machine then boots
+# Arch's graphical.target and penta.target is never reached — no menu, no
+# pentad, no beacon), the NetworkManager/sshd/bluetooth enablement (no network,
+# so no Steam and no cover art) and systemd-repart (no data partition and no
+# swap, which is where the "swap timeout" came from). Every one of those looks
+# like a different bug on the running machine. They are one line of build
+# output nobody was reading.
+#
+# mkosi.finalize is the last hook to run, so whatever preset-all did, this is
+# the state the image actually ships with. /usr/lib/systemd/system-preset/
+# 00-penta.preset should stop the removal happening in the first place; this is
+# what makes it not matter whether it did.
+
+set -eu
+
+ROOT="${BUILDROOT:-${DESTDIR:-}}"
+if [ -z "$ROOT" ] || [ ! -d "$ROOT" ]; then
+        echo "mkosi.finalize: no BUILDROOT to work on (got '${ROOT}')" >&2
+        exit 1
+fi
+
+echo "mkosi.finalize: restoring unit enablement in $ROOT"
+
+want() {
+        # want <target>.wants <unit-path>
+        dir="$ROOT/etc/systemd/system/$1"
+        unit="$2"
+        name="${3:-$(basename "$unit")}"
+        mkdir -p "$dir"
+        ln -sfn "$unit" "$dir/$name"
+        echo "  enabled  $1/$name"
+}
+
+# --- The boot target ----------------------------------------------------------
+# The single most important line in this file. Without it the image is complete,
+# correct, and boots to a bare Arch system with no console on it.
+ln -sfn penta.target "$ROOT/etc/systemd/system/default.target"
+echo "  default.target -> penta.target"
+
+# --- PENTA's own units --------------------------------------------------------
+# penta.target also carries static Wants= for these, which nothing can strip.
+# Belt and braces: two independent mechanisms, because the failure is silent.
+want penta.target.wants /etc/systemd/system/pentad.service
+want penta.target.wants /etc/systemd/system/penta-beacon.service
+want penta.target.wants /etc/systemd/system/penta-mount-data.service
+want penta.target.wants /etc/systemd/system/penta-selftest.service
+want penta.target.wants /usr/lib/systemd/system/greetd.service
+
+# The escape hatch: greetd owns VT1 and NAutoVTs=0 means nothing else ever
+# gives you a prompt. Remove before this ships.
+want penta.target.wants /usr/lib/systemd/system/getty@.service getty@tty2.service
+
+# --- Distribution units the console cannot work without -----------------------
+want multi-user.target.wants /usr/lib/systemd/system/NetworkManager.service
+want multi-user.target.wants /usr/lib/systemd/system/bluetooth.service
+want multi-user.target.wants /usr/lib/systemd/system/sshd.service
+want multi-user.target.wants /usr/lib/systemd/system/systemd-timesyncd.service
+
+# Grows the disk on first boot. Without it there is no /games and no swap, and
+# the fstab entries fail against labels that will never exist.
+want sysinit.target.wants /usr/lib/systemd/system/systemd-repart.service
+
+# --- Prove it ------------------------------------------------------------------
+# A marker, so the build can tell "this hook ran and the wiring is right" from
+# "this hook never ran and the wiring is right by luck". Those two states look
+# identical from outside and behave differently the next time mkosi changes.
+mkdir -p "$ROOT/usr/lib/penta"
+date -u +"finalize ran %Y-%m-%dT%H:%M:%SZ" > "$ROOT/usr/lib/penta/build-info"
+
+echo "mkosi.finalize: /etc/systemd/system as shipped"
+ls -l "$ROOT/etc/systemd/system" | sed 's/^/    /'
+
+test -L "$ROOT/etc/systemd/system/default.target" \
+        || { echo "mkosi.finalize: default.target did not survive" >&2; exit 1; }
