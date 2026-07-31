@@ -127,9 +127,57 @@ jobs:
               mount "${loop}p2" /mnt/root
               echo "--- root filesystem ---"
               du -sh /mnt/root 2>/dev/null | tail -1
-              for f in /usr/lib/systemd/systemd /usr/bin/gamescope /opt/penta/penta-menu; do
+
+              # Everything the console cannot boot or install without. Each of
+              # these has been missing at some point and each time the symptom
+              # was a black screen or a half-written disk, hours later, with
+              # nothing naming the cause.
+              for f in \
+                /usr/lib/systemd/systemd \
+                /usr/bin/gamescope \
+                /usr/bin/greetd \
+                /opt/penta/penta-menu \
+                /opt/penta/daemon/pentad/__main__.py \
+                /usr/bin/penta-session \
+                /usr/bin/penta-mount-data \
+                /usr/bin/penta-beacon \
+                /usr/bin/efibootmgr \
+                /usr/bin/sgdisk \
+                /usr/bin/setpriv \
+                /etc/systemd/system/penta.target \
+                /etc/systemd/system/pentad.service \
+                /usr/lib/systemd/system-preset/00-penta.preset \
+                /usr/lib/repart.d/40-swap.conf \
+                /usr/lib/repart.d/50-data.conf \
+              ; do
                 test -e "/mnt/root$f" || { echo "MISSING from root: $f"; exit 1; }
                 echo "  ok  $f"
+              done
+
+              # If this symlink is wrong or does not survive the build, the
+              # image is complete and correct and boots graphical.target — so
+              # penta.target, and with it greetd, pentad and the menu, never
+              # start. Nothing about the machine looks broken. Assert it here,
+              # because no later stage can tell the difference.
+              echo "--- default.target ---"
+              ls -l /mnt/root/etc/systemd/system/default.target || true
+              want=$(readlink /mnt/root/etc/systemd/system/default.target || echo "")
+              case "$want" in
+                *penta.target) echo "  ok  default.target -> $want" ;;
+                *) echo "FAIL: default.target is '$want', not penta.target"; exit 1 ;;
+              esac
+
+              # Not fatal — penta.target carries static Wants= for all of these
+              # — but if preset-all did not take, they start late or not at all
+              # and this is the only place it is visible.
+              echo "--- enabled units (informational) ---"
+              for u in NetworkManager.service sshd.service bluetooth.service \
+                       systemd-timesyncd.service greetd.service pentad.service; do
+                if find /mnt/root/etc/systemd/system -name "$u" | grep -q .; then
+                  echo "  enabled   $u"
+                else
+                  echo "  NOT enabled  $u"
+                fi
               done
               umount /mnt/root
 
@@ -186,33 +234,27 @@ jobs:
           print("partition table OK")
           PYEOF
 
-      # --- Publish ----------------------------------------------------------
-      - name: Publish the image
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.TAG }}
-          name: PENTA ${{ env.TAG }}
-          files: out/${{ env.IMG }}
-          body: |
-            PENTA console image from `${{ github.sha }}`.
-
-            Flash with Etcher, or:
-            ```
-            sudo ./tools/flash-usb.sh <image.img.xz> diskN
-            ```
-
-            Boot the USB, then Settings → Install to disk for an internal drive.
-
+      # --- Prove it boots, THEN publish -------------------------------------
+      # This used to run after the release was created, which made it decorative:
+      # a broken image was already published and downloaded by the time anyone
+      # read the log. Now the verdict goes into the release notes.
       - name: Boot it in QEMU and photograph the screen
         continue-on-error: true
         run: |
           set -uo pipefail
+          # Set first so the release body is never blank if this step dies early.
+          echo "VERDICT=⚠️ the boot check did not finish" >> "$GITHUB_ENV"
           sudo apt-get update -qq
           sudo apt-get install -y -qq qemu-system-x86 ovmf netcat-openbsd imagemagick
           xz -dc "out/$IMG" > /tmp/penta.raw
           cp /usr/share/OVMF/OVMF_VARS_4M.fd /tmp/vars.fd
           mkdir -p /tmp/shots out/frames
 
+          # Serial is the only channel out of here. The image now puts
+          # `console=ttyS0,115200` on the kernel command line and sets
+          # LogTarget=kmsg, so kernel *and* systemd messages land in boot.log.
+          # Before that this file was empty on every run and the verdict below
+          # was meaningless.
           qemu-system-x86_64 \
             -machine q35,accel=tcg -cpu qemu64 -m 4096 -smp 4 \
             -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
@@ -224,8 +266,10 @@ jobs:
             -no-reboot &
           QPID=$!
 
+          # TCG is software emulation: a full Arch userspace takes minutes.
+          # 40 x 20s ≈ 13 minutes, against a 90-minute job budget.
           sleep 8
-          for i in $(seq 1 26); do
+          for i in $(seq 1 40); do
             kill -0 "$QPID" 2>/dev/null || break
             printf 'screendump /tmp/shots/f%02d.ppm\n' "$i" \
               | timeout 10 nc 127.0.0.1 5555 >/dev/null 2>&1 || true
@@ -240,22 +284,47 @@ jobs:
           for f in $(ls -t /tmp/shots/*.ppm 2>/dev/null | head -4); do
             convert "$f" "out/frames/boot-$(basename "${f%.ppm}").png" 2>/dev/null || true
           done
+          tr -d '\000' < /tmp/boot.log > out/frames/boot.log 2>/dev/null || true
           ls -lh out/frames/ 2>/dev/null || true
 
           echo "======== serial ========"
-          tail -c 4000 /tmp/boot.log | tr -d '\000' || true
+          tail -c 6000 /tmp/boot.log | tr -d '\000' || true
           echo "========================"
           if grep -aq "PENTA-BOOT-OK" /tmp/boot.log; then
-            echo "BOOT VERIFIED: $(grep -ao 'PENTA-BOOT-OK.*' /tmp/boot.log | head -1)"
+            LINE=$(grep -ao 'PENTA-BOOT-OK.*' /tmp/boot.log | head -1)
+            echo "BOOT VERIFIED: $LINE"
+            echo "VERDICT=✅ reached penta.target — \`$LINE\`" >> "$GITHUB_ENV"
+          elif grep -aq "Reached target" /tmp/boot.log; then
+            echo "VERDICT=⚠️ systemd started but penta.target was not reached in the window" >> "$GITHUB_ENV"
+          elif grep -aq "Linux version" /tmp/boot.log; then
+            echo "VERDICT=⚠️ kernel booted, userspace did not come up" >> "$GITHUB_ENV"
           else
-            echo "did not reach penta.target in the window"
-            grep -aq "3008;start=" /tmp/boot.log && echo "  (systemd started)"
+            echo "VERDICT=❌ nothing on the serial console — it did not boot" >> "$GITHUB_ENV"
           fi
 
-      - name: Attach boot frames
-        if: always()
-        continue-on-error: true
+      # --- Publish ----------------------------------------------------------
+      # One release step, not two. The second one ran `if: always()` and fired
+      # with an empty tag_name whenever an earlier step failed.
+      - name: Publish the image
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
-          files: out/frames/*.png
+          name: PENTA ${{ env.TAG }}
+          files: |
+            out/${{ env.IMG }}
+            out/frames/*
+          body: |
+            PENTA console image from `${{ github.sha }}`.
+
+            **Boot check:** ${{ env.VERDICT }}
+
+            Flash with Etcher, or:
+            ```
+            sudo ./tools/flash-usb.sh <image.img.xz> diskN
+            ```
+
+            Boot the USB, then Settings → Install to disk for an internal drive.
+
+            Needs a 32 GB stick or larger. On first boot systemd-repart adds the
+            swap and data partitions and `penta-mount-data.service` mounts them;
+            `boot.log` in the assets is what the serial console said.
