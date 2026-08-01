@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # Build a complete PENTA install stick on a Mac, in one command.
 #
-#   sudo ./tools/make-installer-stick.sh disk4
+#   ./tools/make-installer-stick.sh disk4
+#
+# Run it as YOURSELF, not under sudo. It asks for your password once, when it
+# reaches the raw write. Running the whole thing as root breaks `gh`: sudo
+# resets HOME, so the GitHub token in ~/.config/gh is invisible and the very
+# first release lookup fails with an authentication error.
 #
 # Produces a stick that boots the PENTA installer with the console image
 # sitting on it, compressed, ready to be written to an internal disk. The stick
@@ -32,11 +37,21 @@ die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 say()  { printf '\033[36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
 
-[[ -n "$DISK" ]] || die "usage: sudo $0 <diskN> [console-image-tag]
+[[ -n "$DISK" ]] || die "usage: $0 <diskN> [console-image-tag]
        see: diskutil list external physical"
 [[ "$DISK" =~ ^disk[0-9]+$ ]] || die "expected a whole-disk id like 'disk4', got '$DISK'"
-[[ $EUID -eq 0 ]] || die "run with sudo — writing a raw device needs root"
+
+# Deliberately NOT `[[ $EUID -eq 0 ]]`. Only the dd needs root, and it gets it
+# on its own line below. Requiring root for the whole script means gh runs with
+# HOME=/var/root and cannot see your login.
+if [[ $EUID -eq 0 ]]; then
+  die "do not run this under sudo — run it as yourself.
+       gh keeps its token in \$HOME/.config/gh, and sudo resets HOME, so every
+       release lookup would fail. The one command that needs root asks for your
+       password when it gets there."
+fi
 command -v gh >/dev/null || die "gh not found — brew install gh"
+gh auth status >/dev/null 2>&1 || die "gh is not logged in — run: gh auth login"
 command -v xz >/dev/null || die "xz not found — brew install xz"
 
 DEV="/dev/$DISK"
@@ -98,15 +113,18 @@ say "unmounting $DISK"
 diskutil unmountDisk "$DEV"
 
 say "writing the installer (streamed; nothing lands on this Mac)"
+say "    macOS will ask for your password — the raw device needs root"
 # conv=sparse skips runs of zeros. The 6 GiB payload partition is empty, so
 # this is the difference between writing 9.5 GiB and writing ~1 GB.
+#
+# sudo on the dd alone, so curl and gh keep running as you with your token.
 if command -v pv >/dev/null; then
   curl -fL --retry 3 --retry-delay 2 "$INST_ASSET" \
-    | pv -N installer | xz -dc | dd of="$RDEV" bs=4m conv=sparse
+    | pv -N installer | xz -dc | sudo dd of="$RDEV" bs=4m conv=sparse
 else
   warn "pv not installed (brew install pv) — press Ctrl-T for progress"
   curl -fL --retry 3 --retry-delay 2 "$INST_ASSET" \
-    | xz -dc | dd of="$RDEV" bs=4m conv=sparse
+    | xz -dc | sudo dd of="$RDEV" bs=4m conv=sparse
 fi
 sync
 
