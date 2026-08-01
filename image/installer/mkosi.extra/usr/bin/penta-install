@@ -1,7 +1,7 @@
 #!/bin/bash
 # PENTA installer.
 #
-# Writes penta-<sha>.img.xz from the stick's PENTA_PAYLOAD partition onto an
+# Writes penta-<sha>.img.xz from the stick's PENTA_IMG partition onto an
 # internal disk, then makes the firmware boot it.
 #
 # Everything here is destructive, so it refuses far more than it accepts: never
@@ -14,7 +14,7 @@
 
 set -uo pipefail
 
-PAYLOAD_LABEL=PENTA_PAYLOAD
+PAYLOAD_LABEL=PENTA_IMG
 PAYLOAD_MNT=/run/penta-payload
 LOG=/run/penta-install.log
 
@@ -67,24 +67,60 @@ boot_disk() {
 }
 
 # --- Find the payload ---------------------------------------------------------
+# Look for an image on a mounted filesystem. Echoes the path, or nothing.
+_scan_mount() {
+        find "$1" -maxdepth 2 \( -iname 'penta*.img.xz' -o -iname 'penta*.img.zst' \
+             -o -iname 'penta*.img' \) 2>/dev/null | sort -r | head -1
+}
+
 find_payload() {
-        local dev
+        local dev found
         mkdir -p "$PAYLOAD_MNT"
 
-        if ! findmnt -n "$PAYLOAD_MNT" >/dev/null 2>&1; then
-                # udev may not have caught up with a stick that enumerated late.
-                udevadm settle --timeout=20 >/dev/null 2>&1 || true
-                dev=$(blkid -L "$PAYLOAD_LABEL" 2>/dev/null)
-                [ -z "$dev" ] && return 1
-                mount -o ro "$dev" "$PAYLOAD_MNT" 2>/dev/null || return 1
+        # udev may not have caught up with a stick that enumerated late.
+        udevadm settle --timeout=20 >/dev/null 2>&1 || true
+
+        if findmnt -n "$PAYLOAD_MNT" >/dev/null 2>&1; then
+                found=$(_scan_mount "$PAYLOAD_MNT")
+                [ -n "$found" ] && { echo "$found"; return 0; }
+                umount "$PAYLOAD_MNT" 2>/dev/null || true
         fi
 
-        # First match wins, newest first, so re-copying a newer image without
-        # deleting the old one does the expected thing.
-        find "$PAYLOAD_MNT" -maxdepth 2 -iname 'penta*.img.xz' -o \
-             -maxdepth 2 -iname 'penta*.img.zst' -o \
-             -maxdepth 2 -iname 'penta*.img' 2>/dev/null \
-                | sort -r | head -1
+        # Candidates in order of specificity. The label is FIRST but not ONLY:
+        # a FAT32 label is truncated to 11 characters, so a name that fits today
+        # can silently stop matching if it is ever renamed — which is exactly
+        # how PENTA_PAYLOAD became PENTA_PAYLO and nothing could find it.
+        # PARTLABEL comes from the GPT and is not truncated, so it is the more
+        # reliable of the two.
+        for dev in \
+                "/dev/disk/by-partlabel/PENTA_IMG" \
+                "/dev/disk/by-partlabel/PENTA_PAYLOAD" \
+                "$(blkid -L "$PAYLOAD_LABEL" 2>/dev/null)" \
+                "$(blkid -L PENTA_PAYLO 2>/dev/null)"
+        do
+                [ -n "$dev" ] && [ -e "$dev" ] || continue
+                if mount -o ro "$dev" "$PAYLOAD_MNT" 2>/dev/null; then
+                        found=$(_scan_mount "$PAYLOAD_MNT")
+                        [ -n "$found" ] && { echo "$found"; return 0; }
+                        umount "$PAYLOAD_MNT" 2>/dev/null || true
+                fi
+        done
+
+        # Last resort: try every partition on the machine. Slower, but it means
+        # dropping the image on any stick, any filesystem, any label works — and
+        # "the installer cannot find the image that is definitely right there"
+        # is the worst place for this to be fussy.
+        for dev in $(lsblk -pnro NAME,TYPE 2>/dev/null | awk '$2=="part"{print $1}'); do
+                mount -o ro "$dev" "$PAYLOAD_MNT" 2>/dev/null || continue
+                found=$(_scan_mount "$PAYLOAD_MNT")
+                if [ -n "$found" ]; then
+                        echo "$found"
+                        return 0
+                fi
+                umount "$PAYLOAD_MNT" 2>/dev/null || true
+        done
+
+        return 1
 }
 
 decompressor() {

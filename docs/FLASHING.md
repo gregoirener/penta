@@ -33,12 +33,12 @@ not contain PENTA — the console image rides along beside it on the stick.
 sudo ./tools/flash-usb.sh penta-installer-*.img.xz diskN
 ```
 
-**2. Copy the console image onto it.** A volume named `PENTA_PAYLOAD` appears
+**2. Copy the console image onto it.** A volume named `PENTA_IMG` appears
 in Finder. Drag `penta-<sha>.img.xz` onto it and eject. That is the entire
 manual step — no `dd`, no partition arithmetic.
 
 **3. Boot the stick** (F12 on an Acer). The installer lists every disk, refuses
-its own stick and anything under 24 GB, shows you what is currently on the
+its own stick and anything under 32 GB, shows you what is currently on the
 target, and makes you type out `ERASE NVME0N1` before it writes anything.
 
 Why the two files stay separate: the console image is ~2 GB and GitHub rejects

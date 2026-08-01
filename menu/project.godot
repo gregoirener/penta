@@ -1,6 +1,10 @@
-; PENTA menu — Godot 4 project.
-; Kept minimal on purpose: the input map is built in code (core/input_router.gd)
-; so it stays readable and diffable rather than living in this file as blobs.
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
 
 config_version=5
 
@@ -10,8 +14,8 @@ config/name="PENTA"
 config/description="Console menu"
 run/main_scene="res://main.tscn"
 config/features=PackedStringArray("4.7")
-boot_splash/show_image=false
 boot_splash/bg_color=Color(0.043, 0.051, 0.063, 1)
+boot_splash/show_image=false
 
 [autoload]
 
@@ -26,13 +30,8 @@ window/size/viewport_width=1920
 window/size/viewport_height=1080
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
-window/vsync/vsync_mode=1
-
-[input_devices]
-
-pointing/emulate_touch_from_mouse=false
 
 [rendering]
 
-environment/defaults/default_clear_color=Color(0.043, 0.051, 0.063, 1)
 anti_aliasing/quality/msaa_2d=1
+environment/defaults/default_clear_color=Color(0.043, 0.051, 0.063, 1)

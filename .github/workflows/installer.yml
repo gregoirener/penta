@@ -97,7 +97,7 @@ jobs:
               # writable from macOS and Windows, or the one manual step in the
               # whole procedure does not work.
               mount "${loop}p3" /mnt/payload
-              echo "PENTA_PAYLOAD volume:"
+              echo "PENTA_IMG volume:"
               df -h /mnt/payload
               # printf, not a heredoc: a heredoc body has to start at column 0,
               # which ends the YAML block scalar this whole script lives in.
@@ -155,14 +155,14 @@ jobs:
 
             **2. Copy the console image onto it**
 
-            A volume named `PENTA_PAYLOAD` appears when you plug the stick in —
+            A volume named `PENTA_IMG` appears when you plug the stick in —
             in Finder, in Explorer, anywhere. Drop `penta-<sha>.img.xz` from the
             [console image releases](../../releases) onto it. Eject.
 
             **3. Boot the stick and pick a disk**
 
             F12 on an Acer. The installer lists every disk, refuses its own
-            stick and anything under 24 GB, and asks you to type out the name of
+            stick and anything under 32 GB, and asks you to type out the name of
             the one you are erasing.
 
             ---

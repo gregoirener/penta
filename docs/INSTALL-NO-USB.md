@@ -8,7 +8,7 @@
 > an 8 GB one — is plenty.** Two easier routes than this document:
 >
 > * **The PENTA installer.** A ~400 MB bootable image with an empty
->   `PENTA_PAYLOAD` volume on it. Flash it, drag `penta-<sha>.img.xz` onto the
+>   `PENTA_IMG` volume on it. Flash it, drag `penta-<sha>.img.xz` onto the
 >   volume that appears in Finder, boot it, pick the disk. See
 >   [FLASHING.md](FLASHING.md).
 > * **Ventoy + an Arch ISO.** Put Ventoy on the stick, drop `archlinux.iso` and

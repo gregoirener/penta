@@ -15,7 +15,7 @@
 #
 #   ┌─ PENTA_IESP     512 MiB  the installer's bootloader
 #   ├─ PENTA_INST       3 GiB  the installer OS  (~1 GB used)
-#   └─ PENTA_PAYLOAD    6 GiB  penta-<sha>.img.xz lives here, compressed
+#   └─ PENTA_IMG        6 GiB  penta-<sha>.img.xz lives here, compressed
 #
 # Nothing is stored on the Mac. Both downloads are streamed — the installer
 # straight to the raw device, the console image straight onto the stick's
@@ -31,7 +31,8 @@ IMAGE_TAG="${2:-latest}"
 # 8 GB, decimal. The partition layout above needs 9.5 GiB, so this is the
 # smallest stick that can physically hold it.
 MIN_STICK=$((8 * 1000 * 1000 * 1000))
-PAYLOAD_VOL="/Volumes/PENTA_PAYLOAD"
+# PAYLOAD_VOL is discovered at runtime — see step 2. A FAT32 label is capped at
+# 11 characters, so it cannot be predicted from the name we asked for.
 
 die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 say()  { printf '\033[36m==>\033[0m %s\n' "$*"; }
@@ -131,18 +132,27 @@ else
 fi
 sync
 
-# --- 2. Wait for the payload volume to appear ---------------------------------
-say "waiting for the $( basename "$PAYLOAD_VOL" ) volume"
-diskutil mountDisk "$DEV" >/dev/null 2>&1 || true
+# --- 2. Wait for the payload volume, and ask where it actually mounted --------
+# NOT a hardcoded /Volumes/<label>. A FAT32 label is capped at 11 characters, so
+# the volume can mount under a truncated name — PENTA_PAYLOAD became
+# PENTA_PAYLO — and waiting for a path that will never exist looks exactly like
+# a stick that failed to mount. The partition number is stable; the name is not.
+PAYLOAD_PART="${DEV}s3"
+say "mounting the payload partition ($PAYLOAD_PART)"
+PAYLOAD_VOL=""
 for _ in $(seq 1 30); do
-  [[ -d "$PAYLOAD_VOL" ]] && break
+  diskutil mount "$PAYLOAD_PART" >/dev/null 2>&1 || true
+  PAYLOAD_VOL="$(diskutil info "$PAYLOAD_PART" 2>/dev/null \
+                 | awk -F': *' '/Mount Point/{print $2; exit}' | xargs || true)"
+  [[ -n "$PAYLOAD_VOL" && -d "$PAYLOAD_VOL" ]] && break
+  PAYLOAD_VOL=""
   sleep 1
-  diskutil mountDisk "$DEV" >/dev/null 2>&1 || true
 done
-[[ -d "$PAYLOAD_VOL" ]] || die "$PAYLOAD_VOL never mounted.
+[[ -n "$PAYLOAD_VOL" ]] || die "$PAYLOAD_PART never mounted.
        The stick is written and bootable, but the console image is not on it.
-       Mount it in Finder and copy $IMG_NAME onto the PENTA_PAYLOAD volume by
-       hand, or re-run this script."
+       Mount it in Finder and copy $IMG_NAME onto that volume by hand, or
+       re-run this script."
+say "  mounted at $PAYLOAD_VOL"
 
 # --- 3. Console image, streamed onto the stick --------------------------------
 say "downloading the console image straight onto the stick (~2 GB)"
