@@ -43,13 +43,20 @@ diskutil unmountDisk "$DEV"
 
 # The raw device is an order of magnitude faster than the buffered one on
 # macOS, and bs=4m keeps the USB writing in large bursts.
-# conv=sparse skips runs of zeros instead of writing them. The image is 14 GiB
-# but only ~5.5 GiB is real content — the rest is the unallocated tail of the
-# root partition. Writing those zeros costs eight minutes on a USB 2 stick and
-# achieves nothing: btrfs never reads blocks it has not allocated, and the
-# backup GPT at the very end is non-zero so it still gets written.
-say "writing, skipping zero blocks (Ctrl-T for a status line)"
-"${DECOMP[@]}" "$IMG" | dd of="$RDEV" bs=4m conv=sparse
+#
+# There used to be a conv=sparse here, on the reasoning that most of the image
+# is zeros and skipping them saves eight minutes on a USB 2 stick. It is wrong,
+# and it cost an afternoon: sparse SEEKS past runs of zeros instead of writing
+# them, so on any stick that is not already blank the previous contents survive
+# underneath every zero region of the new image. The filesystems come out as a
+# mixture of new and stale bytes. On the installer stick that produced a FAT32
+# payload partition macOS would not mount at all; on this image it would leave
+# a btrfs root subtly corrupted, which is far worse because it boots.
+#
+# Only ever safe on media that is known-blank, which a stick you are reflashing
+# never is.
+say "writing (Ctrl-T for a status line)"
+"${DECOMP[@]}" "$IMG" | dd of="$RDEV" bs=4m
 sync
 
 say "flushing and re-reading the device"

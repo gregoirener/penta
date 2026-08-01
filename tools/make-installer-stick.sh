@@ -112,9 +112,17 @@ say "unmounting $DISK"
 diskutil unmountDisk "$DEV"
 
 say "writing the installer (streamed; nothing lands on this Mac)"
+say "    9.5 GiB to write — several minutes, and the bar will look stalled"
 say "    macOS will ask for your password — the raw device needs root"
-# conv=sparse skips runs of zeros. The 6 GiB payload partition is empty, so
-# this is the difference between writing 9.5 GiB and writing ~1 GB.
+# NO conv=sparse on this dd, ever. It skips runs of zeros by seeking past them
+# rather than writing them, which is only correct on a device that is already
+# blank. On a stick with anything on it, the old bytes survive underneath every
+# zero region of the new image — and this image is mostly zeros, because the
+# 6 GiB payload partition is empty. The result was a FAT32 filesystem made of
+# half new and half stale bytes that macOS flatly refused to mount, with the
+# ESP and the root partition quietly in the same state.
+#
+# Writing 9.5 GiB takes a few minutes. Writing a corrupt stick takes longer.
 #
 # `gh release download`, not curl. This repo is private, so a plain curl of the
 # browser download URL comes back 404 — GitHub hides private assets rather than
@@ -124,11 +132,11 @@ say "    macOS will ask for your password — the raw device needs root"
 # sudo on the dd alone, so gh keeps running as you.
 if command -v pv >/dev/null; then
   gh release download "$INST_TAG" --repo "$REPO" --pattern "$INST_NAME" --output - \
-    | pv -N installer | xz -dc | sudo dd of="$RDEV" bs=4m conv=sparse
+    | pv -N installer | xz -dc | sudo dd of="$RDEV" bs=4m
 else
   warn "pv not installed (brew install pv) — press Ctrl-T for progress"
   gh release download "$INST_TAG" --repo "$REPO" --pattern "$INST_NAME" --output - \
-    | xz -dc | sudo dd of="$RDEV" bs=4m conv=sparse
+    | xz -dc | sudo dd of="$RDEV" bs=4m
 fi
 sync
 
