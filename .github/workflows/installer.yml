@@ -93,9 +93,27 @@ jobs:
               esac
               umount /mnt/root
 
-              # The payload partition has to be FAT32 and it has to be
-              # writable from macOS and Windows, or the one manual step in the
-              # whole procedure does not work.
+              # Rebuild the payload filesystem with 512-byte sectors.
+              #
+              # systemd-repart/mkfs.fat produced it with BytsPerSec=4096. Linux
+              # mounts that happily, so the build saw nothing wrong — but
+              # macOS msdosfs and Windows both only handle 512-byte sectors, so
+              # the one partition whose entire purpose is being writable from a
+              # Mac was the one neither a Mac nor a PC could open. "Volume on
+              # disk7s3 failed to mount", with a filesystem Linux calls fine.
+              #
+              # -S 512 explicitly, rather than trusting whatever the build host
+              # reports, because that is the field that was wrong.
+              mkfs.vfat -F 32 -S 512 -n PENTA_IMG "${loop}p3"
+
+              # Assert it, because this failed silently once and the symptom
+              # appeared three steps later on a different machine.
+              bps=$(dd if="${loop}p3" bs=1 skip=11 count=2 2>/dev/null \
+                    | od -An -tu2 | tr -d " ")
+              echo "  payload BytsPerSec = $bps"
+              test "$bps" = "512" \
+                || { echo "FAIL: payload FS has ${bps}-byte sectors; macOS needs 512"; exit 1; }
+
               mount "${loop}p3" /mnt/payload
               echo "PENTA_IMG volume:"
               df -h /mnt/payload
