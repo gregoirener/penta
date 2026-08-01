@@ -85,7 +85,11 @@ INST_TAG="$(gh release list --repo "$REPO" --limit 30 \
 INST_NAME="$(gh release view "$INST_TAG" --repo "$REPO" --json assets \
              -q '.assets[] | select(.name | endswith(".img.xz")) | .name' | head -1)"
 [[ -n "$INST_NAME" ]] || die "release $INST_TAG has no .img.xz asset"
-say "  installer: $INST_TAG / $INST_NAME"
+# Exact byte count, so the download bar shows a real percentage and ETA rather
+# than a bouncing marker.
+INST_SIZE="$(gh release view "$INST_TAG" --repo "$REPO" --json assets \
+             -q ".assets[] | select(.name == \"$INST_NAME\") | .size" | head -1)"
+say "  installer: $INST_TAG / $INST_NAME ($((INST_SIZE / 1000000)) MB)"
 
 say "resolving the console image ($IMAGE_TAG)"
 if [[ "$IMAGE_TAG" == "latest" ]]; then
@@ -130,9 +134,20 @@ say "    macOS will ask for your password — the raw device needs root"
 # not in a file), so it just works, and there is no auth header to get wrong.
 #
 # sudo on the dd alone, so gh keeps running as you.
+# TWO progress bars, one on each side of the decompressor. `pv -c` shares the
+# terminal properly between them.
+#
+# There used to be one, on the download side only, and it was actively
+# misleading: it reached 398 MiB and flatlined at 0 B/s while dd spent another
+# ten minutes writing the 9.5 GiB that 398 MiB expands into. The pipeline was
+# healthy and the only readout available said "stalled". Measuring the cheap
+# end of a pipeline tells you nothing about the expensive end.
 if command -v pv >/dev/null; then
   gh release download "$INST_TAG" --repo "$REPO" --pattern "$INST_NAME" --output - \
-    | pv -N installer | xz -dc | sudo dd of="$RDEV" bs=4m
+    | pv -c -N "download " -s "$INST_SIZE" \
+    | xz -dc \
+    | pv -c -N "write→usb" \
+    | sudo dd of="$RDEV" bs=4m
 else
   warn "pv not installed (brew install pv) — press Ctrl-T for progress"
   gh release download "$INST_TAG" --repo "$REPO" --pattern "$INST_NAME" --output - \
