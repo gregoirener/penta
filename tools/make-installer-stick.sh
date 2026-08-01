@@ -74,17 +74,17 @@ fi
 # --- Resolve both assets before destroying anything ---------------------------
 # Doing this first means a missing release is a message, not a wiped stick.
 say "resolving the installer from $REPO"
-INST_URL="$(gh release list --repo "$REPO" --limit 30 \
-            --json tagName,name -q '.[] | select(.tagName | startswith("installer-")) | .tagName' \
+INST_TAG="$(gh release list --repo "$REPO" --limit 30 \
+            --json tagName -q '.[] | select(.tagName | startswith("installer-")) | .tagName' \
             | head -1)"
-[[ -n "$INST_URL" ]] || die "no 'installer-*' release found.
+[[ -n "$INST_TAG" ]] || die "no 'installer-*' release found.
        Run the 'build installer' workflow first:
          gh workflow run installer.yml --repo $REPO"
 
-INST_ASSET="$(gh release view "$INST_URL" --repo "$REPO" --json assets \
-              -q '.assets[] | select(.name | endswith(".img.xz")) | .url' | head -1)"
-[[ -n "$INST_ASSET" ]] || die "release $INST_URL has no .img.xz asset"
-say "  installer: $INST_URL"
+INST_NAME="$(gh release view "$INST_TAG" --repo "$REPO" --json assets \
+             -q '.assets[] | select(.name | endswith(".img.xz")) | .name' | head -1)"
+[[ -n "$INST_NAME" ]] || die "release $INST_TAG has no .img.xz asset"
+say "  installer: $INST_TAG / $INST_NAME"
 
 say "resolving the console image ($IMAGE_TAG)"
 if [[ "$IMAGE_TAG" == "latest" ]]; then
@@ -95,9 +95,7 @@ fi
 
 IMG_NAME="$(gh release view "$IMAGE_TAG" --repo "$REPO" --json assets \
             -q '.assets[] | select(.name | test("^penta-[0-9a-f]+\\.img\\.(xz|zst)$")) | .name' | head -1)"
-IMG_ASSET="$(gh release view "$IMAGE_TAG" --repo "$REPO" --json assets \
-             -q '.assets[] | select(.name | test("^penta-[0-9a-f]+\\.img\\.(xz|zst)$")) | .url' | head -1)"
-[[ -n "$IMG_ASSET" ]] || die "release $IMAGE_TAG has no penta-*.img.xz asset"
+[[ -n "$IMG_NAME" ]] || die "release $IMAGE_TAG has no penta-*.img.xz asset"
 say "  console:   $IMAGE_TAG / $IMG_NAME"
 
 # --- Confirm ------------------------------------------------------------------
@@ -117,13 +115,18 @@ say "    macOS will ask for your password — the raw device needs root"
 # conv=sparse skips runs of zeros. The 6 GiB payload partition is empty, so
 # this is the difference between writing 9.5 GiB and writing ~1 GB.
 #
-# sudo on the dd alone, so curl and gh keep running as you with your token.
+# `gh release download`, not curl. This repo is private, so a plain curl of the
+# browser download URL comes back 404 — GitHub hides private assets rather than
+# returning 401. gh carries the token (which lives in the login keyring here,
+# not in a file), so it just works, and there is no auth header to get wrong.
+#
+# sudo on the dd alone, so gh keeps running as you.
 if command -v pv >/dev/null; then
-  curl -fL --retry 3 --retry-delay 2 "$INST_ASSET" \
+  gh release download "$INST_TAG" --repo "$REPO" --pattern "$INST_NAME" --output - \
     | pv -N installer | xz -dc | sudo dd of="$RDEV" bs=4m conv=sparse
 else
   warn "pv not installed (brew install pv) — press Ctrl-T for progress"
-  curl -fL --retry 3 --retry-delay 2 "$INST_ASSET" \
+  gh release download "$INST_TAG" --repo "$REPO" --pattern "$INST_NAME" --output - \
     | xz -dc | sudo dd of="$RDEV" bs=4m conv=sparse
 fi
 sync
@@ -144,11 +147,11 @@ done
 # --- 3. Console image, streamed onto the stick --------------------------------
 say "downloading the console image straight onto the stick (~2 GB)"
 if command -v pv >/dev/null; then
-  curl -fL --retry 3 --retry-delay 2 "$IMG_ASSET" \
+  gh release download "$IMAGE_TAG" --repo "$REPO" --pattern "$IMG_NAME" --output - \
     | pv -N "$IMG_NAME" > "$PAYLOAD_VOL/$IMG_NAME"
 else
-  curl -fL --retry 3 --retry-delay 2 --progress-bar "$IMG_ASSET" \
-    -o "$PAYLOAD_VOL/$IMG_NAME"
+  gh release download "$IMAGE_TAG" --repo "$REPO" --pattern "$IMG_NAME" \
+    --output "$PAYLOAD_VOL/$IMG_NAME" --clobber
 fi
 
 # The most likely failure here is a FAT32 write that ran out of room, and a
