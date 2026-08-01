@@ -138,9 +138,28 @@ sync
 # PENTA_PAYLO — and waiting for a path that will never exist looks exactly like
 # a stick that failed to mount. The partition number is stable; the name is not.
 PAYLOAD_PART="${DEV}s3"
-say "mounting the payload partition ($PAYLOAD_PART)"
+
+# macOS re-reads the partition table on its own after a raw write, but takes its
+# time about it — measured at over 90 seconds on this machine. A 30s wait gave
+# up while the kernel was still working and reported a stick that had, in fact,
+# been written perfectly. Wait for the device NODE first, separately, so the
+# two failure modes ("never re-read" and "read but would not mount") stay
+# distinguishable.
+say "waiting for macOS to re-read the partition table"
+for i in $(seq 1 120); do
+  [[ -e "$PAYLOAD_PART" ]] && break
+  # Nudge it: reading the whole disk makes DiskArbitration re-probe.
+  (( i % 10 == 0 )) && diskutil list "$DEV" >/dev/null 2>&1
+  sleep 1
+done
+[[ -e "$PAYLOAD_PART" ]] || die "$PAYLOAD_PART never appeared after two minutes.
+       The image was written, but macOS has not re-read the partition table.
+       Unplug the stick, plug it back in, and re-run — the write is idempotent."
+say "  $PAYLOAD_PART is there"
+
+say "mounting the payload partition"
 PAYLOAD_VOL=""
-for _ in $(seq 1 30); do
+for _ in $(seq 1 60); do
   diskutil mount "$PAYLOAD_PART" >/dev/null 2>&1 || true
   PAYLOAD_VOL="$(diskutil info "$PAYLOAD_PART" 2>/dev/null \
                  | awk -F': *' '/Mount Point/{print $2; exit}' | xargs || true)"
@@ -148,10 +167,22 @@ for _ in $(seq 1 30); do
   PAYLOAD_VOL=""
   sleep 1
 done
-[[ -n "$PAYLOAD_VOL" ]] || die "$PAYLOAD_PART never mounted.
-       The stick is written and bootable, but the console image is not on it.
-       Mount it in Finder and copy $IMG_NAME onto that volume by hand, or
-       re-run this script."
+
+# Last resort: find it by the marker file the build drops on that partition.
+# Works whatever the volume ended up being called.
+if [[ -z "$PAYLOAD_VOL" ]]; then
+  for v in /Volumes/*; do
+    [[ -f "$v/PUT-PENTA-IMAGE-HERE.txt" ]] && { PAYLOAD_VOL="$v"; break; }
+  done
+fi
+
+if [[ -z "$PAYLOAD_VOL" ]]; then
+  warn "could not mount $PAYLOAD_PART. Current state:"
+  diskutil list "$DEV" >&2 || true
+  die "the stick is written and bootable, but the console image is not on it.
+       Open it in Finder and copy $IMG_NAME onto the PENTA_IMG volume by hand,
+       or unplug/replug the stick and re-run this script."
+fi
 say "  mounted at $PAYLOAD_VOL"
 
 # --- 3. Console image, streamed onto the stick --------------------------------
