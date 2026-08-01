@@ -231,8 +231,15 @@ jobs:
           echo "TAG=$TAG" >> "$GITHUB_ENV"
           echo "IMG=$IMG" >> "$GITHUB_ENV"
           size=$(stat -c%s "out/$IMG")
-          # GitHub rejects release assets over 2 GiB.
-          test "$size" -lt 2147483648 \
+          # GitHub rejects release assets over 2 GiB. Report the headroom every
+          # time, not just when it blows: this limit was hit by adding storage
+          # drivers to the initrd, 14 minutes into a build, with no warning that
+          # the margin had been shrinking.
+          limit=2147483648
+          echo "asset  : $size bytes"
+          echo "limit  : $limit bytes"
+          echo "headroom: $(( (limit - size) / 1048576 )) MiB"
+          test "$size" -lt "$limit" \
             || { echo "asset too large for a release: $size bytes"; exit 1; }
 
       - name: Check the partition table
